@@ -1,0 +1,41 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch CanMV Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/extension"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/extension/out/**/*.js"
+      ],
+      "preLaunchTask": "canmv: debug build"
+    },
+    {
+      "name": "Launch Extension (from root, all files visible)",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/extension"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/extension/out/**/*.js"
+      ],
+      "preLaunchTask": "canmv: debug build"
+    },
+    {
+      "name": "Attach to Python Backend",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": { "host": "localhost", "port": 5678 },
+      "pathMappings": [
+        {
+          "localRoot": "${workspaceFolder}/performance-spike/backend",
+          "remoteRoot": "${workspaceFolder}/performance-spike/backend"
+        }
+      ]
+    }
+  ]
+}

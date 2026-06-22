@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CanMV Preview</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #1e1e1e; color: #ccc; font-family: sans-serif; }
+    body { display: flex; flex-direction: column; }
+    #status-bar {
+      display: flex; align-items: center; gap: 12px; padding: 4px 10px;
+      background: #252525; border-bottom: 1px solid #333; font-size: 12px; font-family: monospace;
+    }
+    #status-bar .indicator { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+    .indicator.off { background: #666; }
+    .indicator.on { background: #4c4; }
+    .indicator.stream { background: #48f; }
+    #image-info { color: #888; }
+    #fps-display { margin-left: auto; color: #8c8; }
+    #toolbar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: #2d2d2d; border-bottom: 1px solid #444; }
+    button {
+      width: 28px; height: 24px; border: 1px solid #555; border-radius: 3px;
+      background: #3c3c3c; color: #ccc; cursor: pointer; font-size: 12px;
+    }
+    button:enabled:hover { background: #4c4c4c; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    select {
+      height: 24px; min-width: 148px; border: 1px solid #555; border-radius: 3px;
+      background: #3c3c3c; color: #ddd; font-size: 12px; padding: 0 22px 0 6px;
+    }
+    select:focus, button:focus { outline: 1px solid #6aa9ff; outline-offset: 1px; }
+    .toolbar-separator { width: 1px; height: 18px; background: #555; margin: 0 4px; }
+    .select-label { color: #aaa; font-size: 12px; line-height: 24px; }
+    #main {
+      flex: 1; min-height: 0; width: 100%; display: flex; background: #1e1e1e;
+    }
+    #canvas-wrap {
+      flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; background: #1e1e1e;
+    }
+    #canvas-wrap.original { overflow: auto; }
+    #canvas-stage {
+      min-width: 100%; min-height: 100%; display: flex; align-items: center; justify-content: center;
+    }
+    #canvas-wrap.original #canvas-stage { width: max-content; height: max-content; }
+    canvas { flex: 0 0 auto; display: block; }
+    #histogram-panel {
+      flex: 0 0 320px; min-width: 260px; max-width: 42vw; overflow: auto;
+      border-left: 1px solid #333; background: #202020;
+    }
+    #histogram-panel.hidden { display: none; }
+    #histogram-channels { display: flex; flex-direction: column; gap: 0; min-height: 100%; }
+    .hist-channel {
+      padding: 8px 10px 9px; border-bottom: 1px solid #333;
+    }
+    .hist-channel[hidden] { display: none; }
+    .hist-title {
+      height: 16px; color: #ddd; font-size: 12px; font-weight: 600; line-height: 16px;
+    }
+    .hist-canvas {
+      width: 100%; height: 74px; margin: 5px 0 7px;
+      border: 1px solid #3a3a3a; background: #151515;
+    }
+    .hist-stats {
+      display: grid; grid-template-columns: repeat(4, auto minmax(3ch, 1fr));
+      gap: 2px 6px; color: #aaa; font: 11px/1.25 monospace;
+    }
+    .stat-label { color: #777; }
+    .stat-value { color: #d0d0d0; text-align: right; min-width: 4ch; }
+    @media (max-width: 760px) {
+      #main { flex-direction: column; }
+      #histogram-panel {
+        flex: 0 0 224px; width: 100%; max-width: none; min-width: 0;
+        border-left: 0; border-top: 1px solid #333;
+      }
+      #histogram-channels { flex-direction: row; min-height: 0; }
+      .hist-channel { flex: 1 1 0; min-width: 190px; border-right: 1px solid #333; border-bottom: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div id="status-bar">
+    <span><span class="indicator off" id="status-dot"></span><span id="state-text">Disconnected</span></span>
+    <span id="image-info">Image: --</span>
+    <span id="fps-display">FPS: --</span>
+  </div>
+  <div id="toolbar">
+    <button id="disable-btn" title="Disable Preview" aria-label="Disable Preview">⊘</button>
+    <button id="scale-btn" title="Show Original Size" aria-label="Show Original Size">1:1</button>
+    <button id="rotate-btn" title="Rotate Frame" aria-label="Rotate Frame">↻</button>
+    <button id="save-btn" title="Save Image" aria-label="Save Image">⤓</button>
+    <span class="toolbar-separator" aria-hidden="true"></span>
+    <label class="select-label" for="histogram-select">Histogram</label>
+    <select id="histogram-select" title="Histogram color space" aria-label="Histogram color space">
+      <option value="rgb">RGB Color Space</option>
+      <option value="grayscale">Grayscale Color Space</option>
+      <option value="lab">LAB Color Space</option>
+      <option value="yuv">YUV Color Space</option>
+      <option value="none">None</option>
+    </select>
+  </div>
+  <div id="main">
+    <div id="canvas-wrap">
+      <div id="canvas-stage">
+        <canvas id="canvas"></canvas>
+      </div>
+    </div>
+    <div id="histogram-panel">
+      <div id="histogram-channels">
+        <section class="hist-channel" data-channel="0">
+          <div class="hist-title">R</div>
+          <canvas class="hist-canvas" width="280" height="74"></canvas>
+          <div class="hist-stats"></div>
+        </section>
+        <section class="hist-channel" data-channel="1">
+          <div class="hist-title">G</div>
+          <canvas class="hist-canvas" width="280" height="74"></canvas>
+          <div class="hist-stats"></div>
+        </section>
+        <section class="hist-channel" data-channel="2">
+          <div class="hist-title">B</div>
+          <canvas class="hist-canvas" width="280" height="74"></canvas>
+          <div class="hist-stats"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const vscode = acquireVsCodeApi();
+    const statusDot = document.getElementById('status-dot');
+    const stateText = document.getElementById('state-text');
+    const imageInfo = document.getElementById('image-info');
+    const fpsDisplay = document.getElementById('fps-display');
+    const disableBtn = document.getElementById('disable-btn');
+    const scaleBtn = document.getElementById('scale-btn');
+    const rotateBtn = document.getElementById('rotate-btn');
+    const saveBtn = document.getElementById('save-btn');
+    const histogramSelect = document.getElementById('histogram-select');
+    const histogramPanel = document.getElementById('histogram-panel');
+    const histogramChannels = Array.from(document.querySelectorAll('.hist-channel')).map((el) => ({
+      el,
+      title: el.querySelector('.hist-title'),
+      canvas: el.querySelector('.hist-canvas'),
+      stats: el.querySelector('.hist-stats')
+    }));
+    const canvasWrap = document.getElementById('canvas-wrap');
+    const canvasStage = document.getElementById('canvas-stage');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const histogramSampleCanvas = document.createElement('canvas');
+    const histogramSampleCtx = histogramSampleCanvas.getContext('2d', { willReadFrequently: true });
+    const savedState = vscode.getState() || {};
+
+    let isRendering = false, pendingFrame = null, fpsFrames = [], frameCount = 0;
+    let currentState = 'disconnected', rotation = 0, hasFrame = false, lastFrameData = null, previewDisabled = false;
+    let virtualTouchEnabled = false, virtualTouchSupported = false;
+    let scaleMode = savedState.scaleMode === 'original' ? 'original' : 'fit';
+    let histogramMode = isHistogramMode(savedState.histogramMode) ? savedState.histogramMode : 'none';
+    let lastImageSize = null;
+    let profileEnabled = false, profileRecords = {};
+    let lastOriginalLayout = '';
+    let resizeRenderPending = false;
+    let resizeRenderFrame = 0;
+    let histogramUpdatePending = false;
+    let histogramUpdateTimer = 0;
+    let histogramLastAt = 0;
+    let lastHistogramChannels = [];
+    const fpsWindowMs = 3000;
+    const fpsHoldMs = 3000;
+    const histogramMaxSampleEdge = 160;
+    const histogramMinIntervalMs = 250;
+    let lastFpsValue = null;
+    let lastFpsSampleAt = 0;
+
+    const stateStyles = {
+      disconnected: { dot: 'off', text: 'Disconnected' },
+      connecting:    { dot: 'on',  text: 'Connecting...' },
+      connected:     { dot: 'on',  text: 'Connected' },
+      streaming:     { dot: 'stream', text: 'Streaming' }
+    };
+
+    window.addEventListener('message', (e) => {
+      let m = e.data;
+      switch (m.type) {
+        case 'state':
+          { let s = stateStyles[m.state] || stateStyles.disconnected;
+            currentState = m.state || 'disconnected';
+            statusDot.className = 'indicator ' + s.dot;
+            stateText.textContent = s.text;
+            if (currentState === 'disconnected') {
+              setVirtualTouchState({ supported: false, enabled: false });
+              clearCanvas();
+            }
+            updateControls(); }
+          break;
+        case 'profileConfig':
+          profileEnabled = m.enabled === true;
+          break;
+        case 'previewDisabled':
+          previewDisabled = m.disabled === true;
+          updateControls();
+          break;
+        case 'scriptRunning':
+          updateControls();
+          break;
+        case 'virtualTouchState':
+          setVirtualTouchState(m);
+          break;
+        case 'boardInfo':
+          break;
+        case 'started':
+          resetFps();
+          previewDisabled = false;
+          currentState = 'streaming'; updateControls();
+          break;
+        case 'stopped':
+          resetFps();
+          imageInfo.textContent = 'Image: --';
+          pendingFrame = null; isRendering = false;
+          currentState = 'connected'; updateControls();
+          break;
+        case 'frame':
+          if (profileEnabled) {
+            const fid = m.frameId || 0;
+            if (!profileRecords[fid]) profileRecords[fid] = {};
+            profileRecords[fid].ts_webview_msg = performance.now();
+          }
+          const frameData = normalizeFrameData(m.data, m.byteLength);
+          if (!frameData) {
+            imageInfo.textContent = 'Image: decode error';
+            console.error('Unsupported frame payload', m.data);
+            break;
+          }
+          lastFrameData = frameData;
+          pendingFrame = { data: frameData, frameId: m.frameId || 0 };
+          hasFrame = true; updateControls();
+          frameCount++;
+          if (!isRendering) { const f = pendingFrame; pendingFrame = null; renderFrame(f.data, f.frameId); }
+          break;
+      }
+    });
+
+    function normalizeFrameData(data, byteLength) {
+      if (data instanceof ArrayBuffer) return new Uint8Array(data);
+      if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      if (Array.isArray(data)) return new Uint8Array(data);
+      if (!data || typeof data !== 'object') return null;
+
+      if (data.type === 'Buffer' && Array.isArray(data.data)) {
+        return new Uint8Array(data.data);
+      }
+
+      const declaredLength = Number.isInteger(byteLength) ? byteLength : Number(data.byteLength ?? data.length);
+      if (Number.isInteger(declaredLength) && declaredLength >= 0) {
+        const out = new Uint8Array(declaredLength);
+        for (let i = 0; i < declaredLength; i++) out[i] = data[i] || 0;
+        return out;
+      }
+
+      const keys = Object.keys(data).filter((key) => /^\d+$/.test(key)).sort((a, b) => Number(a) - Number(b));
+      if (!keys.length) return null;
+      const out = new Uint8Array(keys.length);
+      for (let i = 0; i < keys.length; i++) out[i] = data[keys[i]] || 0;
+      return out;
+    }
+
+    async function renderFrame(buf, frameId, recordFps = true) {
+      isRendering = true;
+      try {
+        let tDecodeStart = performance.now();
+        let bmp = await createImageBitmap(new Blob([buf], { type: 'image/jpeg' }));
+        let tDecodeEnd = performance.now();
+        lastImageSize = { width: bmp.width, height: bmp.height };
+        updateImageInfo();
+        let tDrawStart = performance.now();
+        drawBitmap(bmp); bmp.close();
+        let tDrawEnd = performance.now();
+        scheduleHistogramUpdate();
+        if (recordFps) {
+          recordFpsSample(tDrawEnd);
+        }
+        if (profileEnabled && frameId) {
+          let r = profileRecords[frameId] || {};
+          r.ts_decode_start = tDecodeStart;
+          r.ts_decode_delta = tDecodeEnd - tDecodeStart;
+          r.ts_draw_delta = tDrawEnd - tDrawStart;
+          profileRecords[frameId] = r;
+          if (frameId % 100 === 0) flushProfile();
+        }
+      } catch (e) {
+        imageInfo.textContent = 'Image: decode error';
+        console.error(e);
+      }
+      finally {
+        isRendering = false;
+        if (pendingFrame) {
+          const f = pendingFrame;
+          pendingFrame = null;
+          renderFrame(f.data, f.frameId);
+        } else if (resizeRenderPending && lastFrameData) {
+          resizeRenderPending = false;
+          renderFrame(lastFrameData, 0, false);
+        }
+      }
+    }
+
+    function drawBitmap(bmp) {
+      const normalized = ((rotation % 360) + 360) % 360;
+      const rotated = normalized === 90 || normalized === 270;
+      const w = rotated ? bmp.height : bmp.width;
+      const h = rotated ? bmp.width : bmp.height;
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+      applyCanvasScale();
+      ctx.save();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (normalized === 90) {
+        ctx.translate(canvas.width, 0); ctx.rotate(Math.PI / 2);
+      } else if (normalized === 180) {
+        ctx.translate(canvas.width, canvas.height); ctx.rotate(Math.PI);
+      } else if (normalized === 270) {
+        ctx.translate(0, canvas.height); ctx.rotate(3 * Math.PI / 2);
+      }
+      ctx.drawImage(bmp, 0, 0);
+      ctx.restore();
+    }
+
+    function clearCanvas() {
+      pendingFrame = null; lastFrameData = null; lastImageSize = null; isRendering = false; hasFrame = false;
+      imageInfo.textContent = 'Image: --';
+      canvas.style.width = '';
+      canvas.style.height = '';
+      canvasStage.style.width = '';
+      canvasStage.style.height = '';
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      clearHistogram();
+      resetFps();
+      updateControls();
+    }
+
+    function updateImageInfo() {
+      if (!hasFrame || !lastImageSize) {
+        imageInfo.textContent = 'Image: --';
+        return;
+      }
+      imageInfo.textContent = `Image: ${lastImageSize.width}×${lastImageSize.height} | ${scaleMode === 'fit' ? 'Fit' : '1:1'}`;
+    }
+
+    function applyCanvasScale(centerOriginal = false) {
+      const w = canvas.width;
+      const h = canvas.height;
+      const wrapW = canvasWrap.clientWidth;
+      const wrapH = canvasWrap.clientHeight;
+      canvasWrap.classList.toggle('original', scaleMode === 'original');
+
+      if (!w || !h) {
+        lastOriginalLayout = '';
+        canvasStage.style.width = '';
+        canvasStage.style.height = '';
+        canvas.style.width = '';
+        canvas.style.height = '';
+        return;
+      }
+
+      if (scaleMode === 'original') {
+        const stageW = Math.max(w, wrapW);
+        const stageH = Math.max(h, wrapH);
+        const layout = `${w}x${h}:${wrapW}x${wrapH}`;
+        canvasStage.style.width = `${stageW}px`;
+        canvasStage.style.height = `${stageH}px`;
+        canvas.style.width = `${w}px`;
+        canvas.style.height = `${h}px`;
+        if (centerOriginal || layout !== lastOriginalLayout) {
+          canvasWrap.scrollLeft = Math.max(0, (stageW - wrapW) / 2);
+          canvasWrap.scrollTop = Math.max(0, (stageH - wrapH) / 2);
+          lastOriginalLayout = layout;
+        }
+        return;
+      }
+
+      lastOriginalLayout = '';
+      canvasStage.style.width = '';
+      canvasStage.style.height = '';
+      const scale = Math.min(wrapW / w, wrapH / h);
+      const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+      canvas.style.width = `${Math.max(1, Math.floor(w * safeScale))}px`;
+      canvas.style.height = `${Math.max(1, Math.floor(h * safeScale))}px`;
+    }
+
+    function resetFps() {
+      fpsFrames = [];
+      frameCount = 0;
+      lastFpsValue = null;
+      lastFpsSampleAt = 0;
+      fpsDisplay.textContent = 'FPS: --';
+    }
+
+    function resetFpsSamples() {
+      fpsFrames = [];
+      lastFpsValue = null;
+      lastFpsSampleAt = 0;
+      updateFpsDisplay();
+    }
+
+    function trimFpsSamples(now) {
+      const cutoff = now - fpsWindowMs;
+      while (fpsFrames.length && fpsFrames[0] < cutoff) fpsFrames.shift();
+    }
+
+    function getFpsValue(now) {
+      trimFpsSamples(now);
+      if (fpsFrames.length >= 2) {
+        const span = fpsFrames[fpsFrames.length - 1] - fpsFrames[0];
+        if (span > 0) return ((fpsFrames.length - 1) * 1000) / span;
+      }
+      if (lastFpsValue !== null && now - lastFpsSampleAt <= fpsHoldMs) return lastFpsValue;
+      return null;
+    }
+
+    function formatFps(value) {
+      if (value === null) return '--';
+      return value < 10 ? value.toFixed(1) : String(Math.round(value));
+    }
+
+    function updateFpsDisplay(now = performance.now()) {
+      fpsDisplay.textContent = `FPS: ${formatFps(getFpsValue(now))}${frameCount ? ` (fc:${frameCount})` : ''}`;
+    }
+
+    function recordFpsSample(now) {
+      fpsFrames.push(now);
+      const fps = getFpsValue(now);
+      if (fps !== null) {
+        lastFpsValue = fps;
+        lastFpsSampleAt = now;
+      }
+      updateFpsDisplay(now);
+    }
+
+    function redrawFrameAfterResize() {
+      if (resizeRenderFrame) cancelAnimationFrame(resizeRenderFrame);
+      resizeRenderFrame = requestAnimationFrame(() => {
+        resizeRenderFrame = 0;
+        applyCanvasScale();
+        if (!hasFrame || !lastFrameData) return;
+
+        resizeRenderPending = true;
+        if (!isRendering) {
+          resizeRenderPending = false;
+          renderFrame(lastFrameData, 0, false);
+        }
+      });
+    }
+
+    function updateControls() {
+      disableBtn.disabled = currentState === 'disconnected' || currentState === 'connecting';
+      disableBtn.textContent = previewDisabled ? '◉' : '⊘';
+      disableBtn.title = previewDisabled ? 'Enable Preview' : 'Disable Preview';
+      disableBtn.setAttribute('aria-label', disableBtn.title);
+      scaleBtn.disabled = !hasFrame;
+      scaleBtn.textContent = scaleMode === 'fit' ? '1:1' : '⛶';
+      scaleBtn.title = scaleMode === 'fit' ? 'Show Original Size' : 'Fit to Window';
+      scaleBtn.setAttribute('aria-label', scaleBtn.title);
+      scaleBtn.setAttribute('aria-pressed', scaleMode === 'original' ? 'true' : 'false');
+      rotateBtn.disabled = !hasFrame;
+      saveBtn.disabled = !hasFrame;
+      canvas.style.cursor = virtualTouchEnabled && hasFrame ? 'crosshair' : '';
+    }
+
+    function setVirtualTouchState(state) {
+      virtualTouchSupported = state && state.supported === true;
+      virtualTouchEnabled = virtualTouchSupported && state.enabled === true;
+      updateControls();
+    }
+
+    function isHistogramMode(value) {
+      return value === 'rgb' || value === 'grayscale' || value === 'lab' || value === 'yuv' || value === 'none';
+    }
+
+    function persistViewState() {
+      vscode.setState({ scaleMode, histogramMode });
+    }
+
+    function applyHistogramMode() {
+      histogramSelect.value = histogramMode;
+      histogramPanel.classList.toggle('hidden', histogramMode === 'none');
+      if (histogramMode === 'none') {
+        clearHistogram();
+      } else {
+        scheduleHistogramUpdate(true);
+      }
+    }
+
+    function clearHistogram() {
+      if (histogramUpdateTimer) {
+        clearTimeout(histogramUpdateTimer);
+        histogramUpdateTimer = 0;
+      }
+      histogramUpdatePending = false;
+      lastHistogramChannels = [];
+      for (const channel of histogramChannels) {
+        const plot = channel.canvas.getContext('2d');
+        plot.clearRect(0, 0, channel.canvas.width, channel.canvas.height);
+        channel.stats.textContent = '';
+      }
+    }
+
+    function scheduleHistogramUpdate(force = false) {
+      if (histogramMode === 'none') return;
+      if (!hasFrame || !canvas.width || !canvas.height) {
+        clearHistogram();
+        return;
+      }
+
+      if (histogramUpdatePending && !force) return;
+
+      const now = performance.now();
+      const delay = force ? 0 : Math.max(0, histogramMinIntervalMs - (now - histogramLastAt));
+      histogramUpdatePending = true;
+      if (histogramUpdateTimer) clearTimeout(histogramUpdateTimer);
+      histogramUpdateTimer = setTimeout(() => {
+        histogramUpdateTimer = 0;
+        histogramUpdatePending = false;
+        histogramLastAt = performance.now();
+        updateHistogram();
+      }, delay);
+    }
+
+    function updateHistogram() {
+      if (histogramMode === 'none') return;
+      if (!hasFrame || !canvas.width || !canvas.height) {
+        clearHistogram();
+        return;
+      }
+
+      const sample = prepareHistogramSample();
+      if (!sample) {
+        clearHistogram();
+        return;
+      }
+
+      try {
+        const imageData = histogramSampleCtx.getImageData(0, 0, sample.width, sample.height);
+        const channels = buildHistogram(imageData.data, histogramMode);
+        lastHistogramChannels = channels;
+        renderHistogramChannels(channels);
+      } catch (error) {
+        clearHistogram();
+        console.error('Unable to sample preview canvas for histogram', error);
+      }
+    }
+
+    function prepareHistogramSample() {
+      if (!histogramSampleCtx || !canvas.width || !canvas.height) return null;
+      const scale = Math.min(1, histogramMaxSampleEdge / Math.max(canvas.width, canvas.height));
+      const width = Math.max(1, Math.round(canvas.width * scale));
+      const height = Math.max(1, Math.round(canvas.height * scale));
+      if (histogramSampleCanvas.width !== width) histogramSampleCanvas.width = width;
+      if (histogramSampleCanvas.height !== height) histogramSampleCanvas.height = height;
+      histogramSampleCtx.clearRect(0, 0, width, height);
+      histogramSampleCtx.drawImage(canvas, 0, 0, width, height);
+      return { width, height };
+    }
+
+    function buildHistogram(pixels, mode) {
+      if (mode === 'rgb') {
+        const channels = [
+          createChannel('R', 32, '#ff5454', '#5d2424', rgb5To8),
+          createChannel('G', 64, '#69d96f', '#245d28', rgb6To8),
+          createChannel('B', 32, '#5f8fff', '#24365d', rgb5To8)
+        ];
+        for (let i = 0; i < pixels.length; i += 4) {
+          channels[0].bins[pixels[i] >> 3] += 1;
+          channels[1].bins[pixels[i + 1] >> 2] += 1;
+          channels[2].bins[pixels[i + 2] >> 3] += 1;
+        }
+        return finalizeChannels(channels);
+      }
+
+      if (mode === 'grayscale') {
+        const channels = [createChannel('Y', 256, '#bdbdbd', '#4a4a4a', identityValue)];
+        for (let i = 0; i < pixels.length; i += 4) {
+          channels[0].bins[rgbToLuma(pixels[i], pixels[i + 1], pixels[i + 2])] += 1;
+        }
+        return finalizeChannels(channels);
+      }
+
+      if (mode === 'lab') {
+        const channels = [
+          createChannel('L', 101, '#bdbdbd', '#4a4a4a', identityValue),
+          createChannel('A', 256, '#ccff32', '#4f5d24', offset128Value),
+          createChannel('B', 256, '#4c91ff', '#243d5d', offset128Value)
+        ];
+        for (let i = 0; i < pixels.length; i += 4) {
+          const lab = rgbToLab(pixels[i], pixels[i + 1], pixels[i + 2]);
+          channels[0].bins[lab[0]] += 1;
+          channels[1].bins[lab[1] + 128] += 1;
+          channels[2].bins[lab[2] + 128] += 1;
+        }
+        return finalizeChannels(channels);
+      }
+
+      const channels = [
+        createChannel('Y', 256, '#bdbdbd', '#4a4a4a', identityValue),
+        createChannel('U', 256, '#32df86', '#245d3b', offset128Value),
+        createChannel('V', 256, '#cc54ff', '#4f245d', offset128Value)
+      ];
+      for (let i = 0; i < pixels.length; i += 4) {
+        const yuv = rgbToYuv(pixels[i], pixels[i + 1], pixels[i + 2]);
+        channels[0].bins[yuv[0]] += 1;
+        channels[1].bins[yuv[1] + 128] += 1;
+        channels[2].bins[yuv[2] + 128] += 1;
+      }
+      return finalizeChannels(channels);
+    }
+
+    function createChannel(label, bins, stroke, fill, displayValue) {
+      return {
+        label,
+        bins: new Uint32Array(bins),
+        stroke,
+        fill,
+        displayValue,
+        stats: emptyStats()
+      };
+    }
+
+    function finalizeChannels(channels) {
+      for (const channel of channels) {
+        channel.stats = computeStats(channel.bins, channel.displayValue);
+      }
+      return channels;
+    }
+
+    function computeStats(bins, displayValue) {
+      let total = 0;
+      let weighted = 0;
+      let maxCount = 0;
+      let modeBin = 0;
+      let minBin = -1;
+      let maxBin = 0;
+
+      for (let i = 0; i < bins.length; i++) {
+        const count = bins[i];
+        if (!count) continue;
+        const value = displayValue(i);
+        total += count;
+        weighted += value * count;
+        if (minBin < 0) minBin = i;
+        maxBin = i;
+        if (count > maxCount) {
+          maxCount = count;
+          modeBin = i;
+        }
+      }
+
+      if (!total) return emptyStats();
+
+      const mean = Math.round(weighted / total);
+      const lowerTarget = Math.floor((total + 3) / 4);
+      const medianTarget = Math.floor((total + 1) / 2);
+      const upperTarget = Math.floor(((total * 3) + 3) / 4);
+      let lowerQuartile = displayValue(minBin);
+      let median = displayValue(minBin);
+      let upperQuartile = displayValue(maxBin);
+      let seen = 0;
+      let variance = 0;
+
+      for (let i = 0; i < bins.length; i++) {
+        const count = bins[i];
+        if (!count) continue;
+        const value = displayValue(i);
+        const next = seen + count;
+        if (seen < lowerTarget && lowerTarget <= next) lowerQuartile = value;
+        if (seen < medianTarget && medianTarget <= next) median = value;
+        if (seen < upperTarget && upperTarget <= next) upperQuartile = value;
+        variance += count * (value - mean) * (value - mean);
+        seen = next;
+      }
+
+      return {
+        mean,
+        median,
+        mode: displayValue(modeBin),
+        stdev: Math.round(Math.sqrt(variance / total)),
+        min: displayValue(minBin),
+        max: displayValue(maxBin),
+        lq: lowerQuartile,
+        uq: upperQuartile,
+        maxCount
+      };
+    }
+
+    function emptyStats() {
+      return { mean: 0, median: 0, mode: 0, stdev: 0, min: 0, max: 0, lq: 0, uq: 0, maxCount: 0 };
+    }
+
+    function renderHistogramChannels(channels) {
+      histogramChannels.forEach((slot, index) => {
+        const channel = channels[index];
+        slot.el.hidden = !channel;
+        if (!channel) return;
+        slot.title.textContent = channel.label;
+        drawHistogram(slot.canvas, channel);
+        renderStats(slot.stats, channel.stats);
+      });
+    }
+
+    function redrawHistogramPlots() {
+      if (histogramMode === 'none' || !lastHistogramChannels.length) return;
+      renderHistogramChannels(lastHistogramChannels);
+    }
+
+    function drawHistogram(plotCanvas, channel) {
+      const plot = plotCanvas.getContext('2d');
+      const cssWidth = Math.max(1, Math.floor(plotCanvas.clientWidth || plotCanvas.width));
+      const cssHeight = Math.max(1, Math.floor(plotCanvas.clientHeight || plotCanvas.height));
+      const ratio = window.devicePixelRatio || 1;
+      const width = Math.max(1, Math.floor(cssWidth * ratio));
+      const height = Math.max(1, Math.floor(cssHeight * ratio));
+
+      if (plotCanvas.width !== width || plotCanvas.height !== height) {
+        plotCanvas.width = width;
+        plotCanvas.height = height;
+      }
+
+      plot.clearRect(0, 0, width, height);
+      plot.fillStyle = '#151515';
+      plot.fillRect(0, 0, width, height);
+      plot.strokeStyle = '#303030';
+      plot.lineWidth = ratio;
+      plot.beginPath();
+      plot.moveTo(0, height - 0.5 * ratio);
+      plot.lineTo(width, height - 0.5 * ratio);
+      plot.stroke();
+
+      const maxCount = channel.stats.maxCount || 1;
+      const binWidth = width / channel.bins.length;
+      plot.beginPath();
+      plot.moveTo(0, height);
+      for (let i = 0; i < channel.bins.length; i++) {
+        const x = (i + 0.5) * binWidth;
+        const y = height - ((channel.bins[i] / maxCount) * (height - 6 * ratio)) - 3 * ratio;
+        plot.lineTo(x, y);
+      }
+      plot.lineTo(width, height);
+      plot.closePath();
+      plot.fillStyle = channel.fill;
+      plot.fill();
+      plot.strokeStyle = channel.stroke;
+      plot.lineWidth = Math.max(1, ratio);
+      plot.stroke();
+    }
+
+    function renderStats(statsEl, stats) {
+      const rows = [
+        ['Mean', stats.mean], ['Median', stats.median], ['Mode', stats.mode], ['StDev', stats.stdev],
+        ['Min', stats.min], ['Max', stats.max], ['LQ', stats.lq], ['UQ', stats.uq]
+      ];
+      statsEl.textContent = '';
+      for (const [label, value] of rows) {
+        const labelEl = document.createElement('span');
+        labelEl.className = 'stat-label';
+        labelEl.textContent = label;
+        const valueEl = document.createElement('span');
+        valueEl.className = 'stat-value';
+        valueEl.textContent = String(value);
+        statsEl.append(labelEl, valueEl);
+      }
+    }
+
+    function rgb5To8(value) {
+      return Math.round((value * 255) / 31);
+    }
+
+    function rgb6To8(value) {
+      return Math.round((value * 255) / 63);
+    }
+
+    function identityValue(value) {
+      return value;
+    }
+
+    function offset128Value(value) {
+      return value - 128;
+    }
+
+    function rgbToLuma(r, g, b) {
+      return clamp(Math.round((0.299 * r) + (0.587 * g) + (0.114 * b)), 0, 255);
+    }
+
+    function rgbToYuv(r, g, b) {
+      const y = clamp(Math.round((0.299 * r) + (0.587 * g) + (0.114 * b)), 0, 255);
+      const u = clamp(Math.round((-0.168736 * r) - (0.331264 * g) + (0.5 * b)), -128, 127);
+      const v = clamp(Math.round((0.5 * r) - (0.418688 * g) - (0.081312 * b)), -128, 127);
+      return [y, u, v];
+    }
+
+    function rgbToLab(r, g, b) {
+      const sr = pivotRgb(r / 255);
+      const sg = pivotRgb(g / 255);
+      const sb = pivotRgb(b / 255);
+      const x = ((0.4124564 * sr) + (0.3575761 * sg) + (0.1804375 * sb)) / 0.95047;
+      const y = (0.2126729 * sr) + (0.7151522 * sg) + (0.0721750 * sb);
+      const z = ((0.0193339 * sr) + (0.1191920 * sg) + (0.9503041 * sb)) / 1.08883;
+      const fx = pivotLab(x);
+      const fy = pivotLab(y);
+      const fz = pivotLab(z);
+      const l = clamp(Math.round((116 * fy) - 16), 0, 100);
+      const a = clamp(Math.round(500 * (fx - fy)), -128, 127);
+      const bb = clamp(Math.round(200 * (fy - fz)), -128, 127);
+      return [l, a, bb];
+    }
+
+    function pivotRgb(value) {
+      return value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+    }
+
+    function pivotLab(value) {
+      return value > 0.008856 ? Math.cbrt(value) : ((7.787037 * value) + (16 / 116));
+    }
+
+    function clamp(value, min, max) {
+      return Math.min(max, Math.max(min, value));
+    }
+
+    disableBtn.addEventListener('click', () => {
+      vscode.postMessage({
+        type: 'previewCommand',
+        command: previewDisabled ? 'setPreviewEnabled' : 'setPreviewDisabled'
+      });
+    });
+    rotateBtn.addEventListener('click', () => {
+      rotation = (rotation + 90) % 360;
+      if (lastFrameData && !isRendering) renderFrame(lastFrameData, 0, false);
+    });
+    scaleBtn.addEventListener('click', () => {
+      if (!hasFrame) return;
+      scaleMode = scaleMode === 'fit' ? 'original' : 'fit';
+      persistViewState();
+      applyCanvasScale(scaleMode === 'original');
+      updateImageInfo();
+      updateControls();
+    });
+    histogramSelect.addEventListener('change', () => {
+      histogramMode = isHistogramMode(histogramSelect.value) ? histogramSelect.value : 'none';
+      persistViewState();
+      applyHistogramMode();
+    });
+    saveBtn.addEventListener('click', () => {
+      if (!hasFrame) return;
+      canvas.toBlob(async (blob) => {
+        if (!blob) return;
+        vscode.postMessage({ type: 'saveImage', data: await blob.arrayBuffer() });
+      }, 'image/png');
+    });
+    canvas.addEventListener('click', (event) => {
+      if (!virtualTouchEnabled || !hasFrame || !lastImageSize || !canvas.width || !canvas.height) return;
+      const point = mapCanvasClickToOriginal(event);
+      if (!point) return;
+      vscode.postMessage({
+        type: 'virtualTouch',
+        x: point.x,
+        y: point.y,
+        sourceWidth: lastImageSize.width,
+        sourceHeight: lastImageSize.height
+      });
+    });
+
+    function mapCanvasClickToOriginal(event) {
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      const canvasX = clamp(Math.floor(((event.clientX - rect.left) / rect.width) * canvas.width), 0, canvas.width - 1);
+      const canvasY = clamp(Math.floor(((event.clientY - rect.top) / rect.height) * canvas.height), 0, canvas.height - 1);
+      const normalized = ((rotation % 360) + 360) % 360;
+      const srcW = lastImageSize.width;
+      const srcH = lastImageSize.height;
+      let x = canvasX;
+      let y = canvasY;
+
+      if (normalized === 90) {
+        x = canvasY;
+        y = canvas.width - canvasX - 1;
+      } else if (normalized === 180) {
+        x = canvas.width - canvasX - 1;
+        y = canvas.height - canvasY - 1;
+      } else if (normalized === 270) {
+        x = canvas.height - canvasY - 1;
+        y = canvasX;
+      }
+
+      return {
+        x: clamp(x, 0, srcW - 1),
+        y: clamp(y, 0, srcH - 1)
+      };
+    }
+    function flushProfile() {
+      let ids = Object.keys(profileRecords).map(Number).sort((a,b)=>a-b).slice(-100);
+      if (ids.length < 2) return;
+      let decodeDeltas = [], drawDeltas = [];
+      for (let fid of ids) {
+        let r = profileRecords[fid];
+        if (r && r.ts_decode_delta !== undefined) decodeDeltas.push(r.ts_decode_delta);
+        if (r && r.ts_draw_delta !== undefined) drawDeltas.push(r.ts_draw_delta);
+      }
+      let stats = (arr) => {
+        arr.sort((a,b)=>a-b);
+        let n = arr.length;
+        return { avg: arr.reduce((s,v)=>s+v,0)/n, p95: arr[Math.floor(n*0.95)], max: arr[n-1] };
+      };
+      let report = {};
+      if (decodeDeltas.length >= 2) report.decode = stats(decodeDeltas);
+      if (drawDeltas.length >= 2) report.draw = stats(drawDeltas);
+      vscode.postMessage({ type: 'profile', frameRange: ids[0]+'-'+ids[ids.length-1], segments: report });
+      // Keep only last 20
+      let keep = ids.slice(-20);
+      let keepSet = new Set(keep);
+      for (let fid of Object.keys(profileRecords)) { if (!keepSet.has(+fid)) delete profileRecords[fid]; }
+    }
+
+    if (window.ResizeObserver) {
+      new ResizeObserver(() => redrawFrameAfterResize()).observe(canvasWrap);
+      new ResizeObserver(() => redrawHistogramPlots()).observe(histogramPanel);
+    } else {
+      window.addEventListener('resize', redrawFrameAfterResize);
+      window.addEventListener('resize', redrawHistogramPlots);
+    }
+    window.addEventListener('focus', resetFpsSamples);
+    window.addEventListener('blur', resetFpsSamples);
+    document.addEventListener('visibilitychange', resetFpsSamples);
+
+    setInterval(() => {
+      updateFpsDisplay();
+    }, 500);
+
+    statusDot.className = 'indicator off';
+    stateText.textContent = 'Disconnected';
+    applyCanvasScale();
+    applyHistogramMode();
+    updateControls();
+  </script>
+</body>
+</html>

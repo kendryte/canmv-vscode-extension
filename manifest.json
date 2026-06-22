@@ -1,0 +1,30 @@
+{
+  "$schema": "https://canmv.io/schemas/release-manifest/v1.json",
+  "release": "1.4.0",
+  "protocolVersion": 2,
+  "firmware": {
+    "version": "v2.0.0",
+    "url": "",
+    "capabilities": {
+      "fileExec": true,
+      "scriptExec": true,
+      "readFile": true,
+      "writeFile": true,
+      "listDir": true,
+      "queryFileStat": true,
+      "createFile": true,
+      "deleteFile": true,
+      "renameFile": true,
+      "mkdir": true,
+      "rmdir": true
+    }
+  },
+  "backend": {
+    "version": "1.4.0",
+    "url": ""
+  },
+  "extension": {
+    "version": "1.4.0",
+    "url": ""
+  }
+}

@@ -1,0 +1,40 @@
+*.pyc
+*.jpg
+tmp.txt
+.canmv/
+
+
+# OpenCode runtime dependencies
+.opencode/node_modules/
+
+# OMO runtime data
+.omo/
+
+# Extension build outputs
+extension/node_modules/
+extension/out/
+extension/dist/
+extension/bin/
+extension/.vscode-test/
+
+# Node
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+performance-spike/backend/images/
+performance-spike/backend/images_640x480/
+performance-spike/extension/out/
+
+# Go
+.gocache
+.gomodcache
+dist
