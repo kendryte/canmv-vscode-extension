@@ -198,5 +198,5 @@ npm run package:vsix
 
 ## Repository
 
-- Issues: <https://github.com/kendryte/canmv_k230_vscode_extension/issues>
-- Source: <https://github.com/kendryte/canmv_k230_vscode_extension>
+- Issues: <https://github.com/kendryte/canmv-vscode-extension/issues>
+- Source: <https://github.com/kendryte/canmv-vscode-extension>
