@@ -3,7 +3,7 @@
   "displayName": "CanMV",
   "description": "CanMV K230 development in VS Code: connect, run scripts, preview frames, manage files, and use the board terminal.",
   "version": "0.1.0",
-  "publisher": "canmv",
+  "publisher": "kendryte747",
   "repository": {
     "type": "git",
     "url": "https://github.com/kendryte/canmv-vscode-extension.git"
@@ -13,7 +13,7 @@
   },
   "homepage": "https://github.com/kendryte/canmv-vscode-extension#readme",
   "icon": "resources/canmv_icon.png",
-  "preview": true,
+  "preview": false,
   "galleryBanner": {
     "color": "#005189",
     "theme": "dark"
