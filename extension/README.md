@@ -6,8 +6,10 @@ CanMV for VS Code brings CanMV K230 board development into the editor. It connec
 
 - Connect and disconnect CanMV K230 boards from the CanMV activity bar or Command Palette.
 - Auto-detect supported boards by USB VID/PID `1209:abd1`, with a manual serial path override when needed.
+- Use legacy and v2 board protocol support through backend capability negotiation.
 - Run the active Python file on the board, stop a running script, or run a Python file directly from the device tree.
-- Preview live IDE framebuffer images with fit/original-size modes, rotation, PNG capture, FPS display, and RGB/grayscale/LAB/YUV histograms.
+- Preview live IDE framebuffer images with fit/original-size modes, rotation, PNG capture, FPS display, and RGB/grayscale/LAB/YUV histograms with hover readouts.
+- Tune grayscale and LAB thresholds with the Threshold Editor, including image file loading, Frame Buffer capture, tuple copy, and selected tuple apply.
 - Send virtual touch clicks from the preview when the connected firmware reports virtual touch support.
 - Browse mounted device storage, including `/sdcard`, `/data`, and `/udisk`.
 - Create, rename, delete, upload, download, open, edit, and auto-sync remote files.
@@ -37,7 +39,7 @@ CanMV for VS Code brings CanMV K230 board development into the editor. It connec
 | View | Location | Purpose |
 | --- | --- | --- |
 | Controls | CanMV activity bar | Shows connection state, board status, and script state. |
-| Toolbox | CanMV activity bar | Opens extension tools such as Preview. |
+| Toolbox | CanMV activity bar | Opens extension tools such as Preview and Threshold Editor. |
 | Device | CanMV activity bar | Browses and manages files on the connected board. |
 | CanMV Terminal | Panel | Shows board output and accepts REPL input when available. |
 
@@ -66,9 +68,16 @@ The Preview tool supports:
 - Saving the current frame as PNG.
 - FPS and frame count display.
 - RGB, grayscale, LAB, and YUV histograms.
+- Histogram hover readouts for inspecting bin values.
 - Virtual touch click forwarding when supported by the board firmware.
 
 Preview starts automatically after a script begins when the Preview tool is open and preview is not manually disabled.
+
+### Tune Thresholds
+
+Open `Threshold Editor` from the Toolbox or run `CanMV: Threshold Editor`. The editor can load a local image file or grab the current Frame Buffer/preview canvas image, then preview grayscale or LAB threshold results.
+
+You can copy the generated tuple, or select an existing grayscale/LAB tuple in the active editor and apply the new value directly.
 
 ### Manage Device Files
 
@@ -99,6 +108,7 @@ The CanMV Terminal panel keeps recent scrollback, mirrors board/script output, a
 | `CanMV: Disable Preview` | Stop live frame preview and keep it manually disabled. |
 | `CanMV: Run Remote File` | Run a Python file selected in the Device tree. |
 | `CanMV: Open Tool` | Pick and open a CanMV tool. |
+| `CanMV: Threshold Editor` | Open the Threshold Editor tool. |
 | `CanMV: Refresh Explorer` | Refresh the Device tree. |
 | `CanMV: Run Active File on K230` | Run the active editor through the K230 workflow. |
 | `CanMV: Save as main.py` | Save the active editor to `/sdcard/main.py`. |

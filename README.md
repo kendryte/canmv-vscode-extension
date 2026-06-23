@@ -10,16 +10,17 @@ The extension package README lives at [`extension/README.md`](extension/README.m
 | --- | --- |
 | `extension/` | VS Code extension source, package metadata, webviews, resources, and packaged backend binaries. |
 | `extension/src/` | TypeScript extension code. |
-| `extension/webview/` | Preview and terminal webview HTML. |
+| `extension/webview/` | Preview, Threshold Editor, and terminal webview HTML. |
 | `native/go/` | Native Go backend used by the extension to communicate with the board. |
 | `scripts/` | Repository-level build, staging, and packaging helpers. |
 | `manifest.json` | Release metadata for firmware, backend, and extension versions. |
 
 ## Features
 
-- CanMV K230 board connection and auto-detection.
+- CanMV K230 board connection, auto-detection, and legacy/v2 protocol support.
 - Active Python script execution and script stop control.
-- Live camera/framebuffer preview with FPS, histograms, image capture, rotation, and virtual touch support.
+- Live camera/framebuffer preview with FPS, histogram hover readouts, image capture, rotation, and virtual touch support.
+- Threshold Editor for grayscale/LAB threshold tuning, Frame Buffer image loading, tuple copy, and selected tuple apply.
 - Device filesystem browsing, upload/download, rename/delete, and remote Python file editing.
 - Integrated CanMV Terminal for board output, REPL input, Ctrl-C interrupt, and log export.
 - Automatic K230 MicroPython stub configuration for Pylance.
