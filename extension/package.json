@@ -2,7 +2,7 @@
   "name": "canmv-vscode",
   "displayName": "CanMV",
   "description": "CanMV K230 development in VS Code: connect, run scripts, preview frames, manage files, and use the board terminal.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "kendryte747",
   "repository": {
     "type": "git",
