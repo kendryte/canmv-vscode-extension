@@ -44,6 +44,7 @@
     "onCommand:canmv.stopPreview",
     "onCommand:canmv.runRemoteFile",
     "onCommand:canmv.openTool",
+    "onCommand:canmv.openThresholdEditor",
     "onCommand:canmv.newRemoteFile",
     "onCommand:canmv.newRemoteFolder",
     "onCommand:canmv.renameRemoteItem",
@@ -98,6 +99,11 @@
         "command": "canmv.openTool",
         "title": "CanMV: Open Tool",
         "icon": "$(tools)"
+      },
+      {
+        "command": "canmv.openThresholdEditor",
+        "title": "CanMV: Threshold Editor",
+        "icon": "$(settings)"
       },
       {
         "command": "canmv.refreshExplorer",
@@ -312,6 +318,11 @@
           "submenu": "canmv.editorMenu",
           "when": "editorLangId == python && canmv.connected",
           "group": "1_run"
+        },
+        {
+          "command": "canmv.openThresholdEditor",
+          "when": "editorLangId == python",
+          "group": "2_canmv"
         }
       ],
       "editor/title/run": [

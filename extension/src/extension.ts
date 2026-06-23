@@ -17,12 +17,14 @@ import { CanmvFileSystemProvider } from './filesystem/provider';
 import { ToolRegistry, ToolHost } from './webview/ToolHost';
 import { CanmvControlViewProvider } from './webview/CanmvControlViewProvider';
 import { ToolboxTreeProvider } from './webview/ToolboxTreeProvider';
+import { ThresholdEditorPanel, type ThresholdEditorConfig, type ThresholdMode } from './webview/ThresholdEditorPanel';
 import { Methods, createRequest } from './protocol/methods';
 import { isResponse } from './protocol/types';
 import { logDebug, logError, logInfo, logWarn } from './output';
 
 let disposables: vscode.Disposable[] = [];
 let previewPanel: PreviewPanel | undefined;
+let thresholdEditorPanel: ThresholdEditorPanel | undefined;
 let terminalViewProvider: TerminalViewProvider | undefined;
 let backend: NativeBackend | undefined;
 let stubsService: StubsService | undefined;
@@ -32,6 +34,13 @@ type VirtualTouchState = {
   enabled: boolean;
   range?: { w: number; h: number };
   queueDepth?: number;
+};
+
+type ThresholdSelection = {
+  mode: ThresholdMode;
+  values: number[];
+  range: vscode.Range;
+  uri: vscode.Uri;
 };
 
 const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -378,6 +387,48 @@ export function activate(context: vscode.ExtensionContext) {
       return previewPanel;
     }
   });
+  registry.register({
+    id: 'thresholdEditor', name: 'Threshold Editor', icon: 'settings',
+    factory: () => {
+      if (thresholdEditorPanel?.disposed) {
+        thresholdEditorPanel = undefined;
+      }
+      thresholdEditorPanel = new ThresholdEditorPanel(context);
+      thresholdEditorPanel.onDidDispose(() => {
+        thresholdEditorPanel = undefined;
+      });
+      thresholdEditorPanel.onCopyThreshold((text) => {
+        void vscode.env.clipboard.writeText(text).then(() => {
+          thresholdEditorPanel?.sendCopied();
+        });
+      });
+      thresholdEditorPanel.onApplyThreshold((text) => {
+        void applyThresholdToSelection(text).catch((err) => {
+          vscode.window.showErrorMessage(`CanMV: Failed to update threshold - ${err instanceof Error ? err.message : String(err)}`);
+        });
+      });
+      thresholdEditorPanel.onRequestPreviewFrame(() => {
+        const frame = videoService?.getLatestFrame();
+        if (frame) {
+          thresholdEditorPanel?.sendPreviewFrame(frame);
+          return;
+        }
+        if (!previewPanel) {
+          thresholdEditorPanel?.sendFrameUnavailable('No frame buffer image available. Start Preview, wait for a frame, or open an image file.');
+          return;
+        }
+        void previewPanel.captureImage().then((data) => {
+          if (data) {
+            thresholdEditorPanel?.sendPreviewFrame(data, 'Preview Canvas');
+          } else {
+            thresholdEditorPanel?.sendFrameUnavailable('No frame buffer image available. Start Preview, wait for a frame, or open an image file.');
+          }
+        });
+      });
+      thresholdEditorPanel.configure(createThresholdEditorConfig());
+      return thresholdEditorPanel;
+    }
+  });
   const toolHost = new ToolHost(registry);
 
   // VideoService — created on demand when Preview opens
@@ -401,6 +452,12 @@ export function activate(context: vscode.ExtensionContext) {
       toolHost.open('preview');
     }
     return previewPanel;
+  };
+
+  const openThresholdEditor = (config?: ThresholdEditorConfig) => {
+    const panel = toolHost.open('thresholdEditor') as ThresholdEditorPanel;
+    panel.configure(config || createThresholdEditorConfig());
+    return panel;
   };
 
   const clearPreviewAutoRetry = () => {
@@ -688,6 +745,61 @@ export function activate(context: vscode.ExtensionContext) {
     void vscode.window.showErrorMessage(`CanMV: ${operation} failed - ${message}`);
   };
 
+  let thresholdSelection: ThresholdSelection | undefined;
+
+  const parseThresholdTuple = (text: string): { mode: ThresholdMode; values: number[] } | undefined => {
+    const trimmed = text.trim();
+    const match = /^\(\s*([+-]?\d+)\s*,\s*([+-]?\d+)(?:\s*,\s*([+-]?\d+)\s*,\s*([+-]?\d+)\s*,\s*([+-]?\d+)\s*,\s*([+-]?\d+))?\s*\)$/.exec(trimmed);
+    if (!match) return undefined;
+    const values = match.slice(1).filter((value): value is string => value !== undefined).map((value) => Number.parseInt(value, 10));
+    if (values.some((value) => !Number.isFinite(value))) return undefined;
+    if (values.length === 2) return { mode: 'grayscale', values };
+    if (values.length === 6) return { mode: 'lab', values };
+    return undefined;
+  };
+
+  const thresholdSelectionFromEditor = (): ThresholdSelection | undefined => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.selection.isEmpty) return undefined;
+    const parsed = parseThresholdTuple(editor.document.getText(editor.selection));
+    if (!parsed) return undefined;
+    return {
+      ...parsed,
+      range: editor.selection,
+      uri: editor.document.uri,
+    };
+  };
+
+  const createThresholdEditorConfig = (): ThresholdEditorConfig => {
+    thresholdSelection = thresholdSelectionFromEditor();
+    if (!thresholdSelection) {
+      return { canApplyToEditor: false };
+    }
+    return {
+      mode: thresholdSelection.mode,
+      values: thresholdSelection.values,
+      canApplyToEditor: true,
+    };
+  };
+
+  const applyThresholdToSelection = async (text: string) => {
+    if (!thresholdSelection) {
+      vscode.window.showWarningMessage('CanMV: Select a grayscale or LAB threshold tuple before applying.');
+      return;
+    }
+    const document = await vscode.workspace.openTextDocument(thresholdSelection.uri);
+    const editor = await vscode.window.showTextDocument(document, { preview: false });
+    await editor.edit((builder) => {
+      builder.replace(thresholdSelection!.range, text);
+    });
+    thresholdSelection = {
+      ...thresholdSelection,
+      values: parseThresholdTuple(text)?.values || thresholdSelection.values,
+      range: new vscode.Range(thresholdSelection.range.start, thresholdSelection.range.start.translate(0, text.length)),
+    };
+    thresholdEditorPanel?.sendApplied();
+  };
+
   const promptRemoteName = async (prompt: string, value = '') => vscode.window.showInputBox({
     prompt,
     value,
@@ -949,6 +1061,9 @@ export function activate(context: vscode.ExtensionContext) {
           if (pick) toolHost.open(pick.id);
         });
       }
+    }),
+    vscode.commands.registerCommand('canmv.openThresholdEditor', () => {
+      openThresholdEditor(createThresholdEditorConfig());
     }),
     vscode.commands.registerCommand('canmv.newRemoteFile', async (item?: FileTreeItem) => {
       item = item ?? selectedExplorerItem();

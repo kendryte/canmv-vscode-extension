@@ -61,6 +61,14 @@
       width: 100%; height: 74px; margin: 5px 0 7px;
       border: 1px solid #3a3a3a; background: #151515;
     }
+    .hist-canvas.hoverable { cursor: crosshair; }
+    #histogram-tooltip {
+      position: fixed; z-index: 10; display: none; pointer-events: none;
+      max-width: 120px; padding: 3px 7px; border: 1px solid #555; border-radius: 3px;
+      background: #2d2d2d; color: #ddd; font: 11px/1.35 monospace;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+      white-space: nowrap;
+    }
     .hist-stats {
       display: grid; grid-template-columns: repeat(4, auto minmax(3ch, 1fr));
       gap: 2px 6px; color: #aaa; font: 11px/1.25 monospace;
@@ -125,6 +133,7 @@
       </div>
     </div>
   </div>
+  <div id="histogram-tooltip" role="tooltip"></div>
 
   <script>
     const vscode = acquireVsCodeApi();
@@ -138,6 +147,7 @@
     const saveBtn = document.getElementById('save-btn');
     const histogramSelect = document.getElementById('histogram-select');
     const histogramPanel = document.getElementById('histogram-panel');
+    const histogramTooltip = document.getElementById('histogram-tooltip');
     const histogramChannels = Array.from(document.querySelectorAll('.hist-channel')).map((el) => ({
       el,
       title: el.querySelector('.hist-title'),
@@ -166,6 +176,7 @@
     let histogramUpdateTimer = 0;
     let histogramLastAt = 0;
     let lastHistogramChannels = [];
+    let histogramHover = null;
     const fpsWindowMs = 3000;
     const fpsHoldMs = 3000;
     const histogramMaxSampleEdge = 160;
@@ -206,6 +217,9 @@
           break;
         case 'virtualTouchState':
           setVirtualTouchState(m);
+          break;
+        case 'captureImage':
+          captureCurrentImage();
           break;
         case 'boardInfo':
           break;
@@ -336,6 +350,16 @@
       clearHistogram();
       resetFps();
       updateControls();
+    }
+
+    function captureCurrentImage() {
+      if (!hasFrame || !canvas.width || !canvas.height) {
+        vscode.postMessage({ type: 'captureImage' });
+        return;
+      }
+      canvas.toBlob(async (blob) => {
+        vscode.postMessage({ type: 'captureImage', data: blob ? await blob.arrayBuffer() : undefined });
+      }, 'image/png');
     }
 
     function updateImageInfo() {
@@ -483,6 +507,7 @@
     function applyHistogramMode() {
       histogramSelect.value = histogramMode;
       histogramPanel.classList.toggle('hidden', histogramMode === 'none');
+      clearHistogramHover();
       if (histogramMode === 'none') {
         clearHistogram();
       } else {
@@ -496,6 +521,8 @@
         histogramUpdateTimer = 0;
       }
       histogramUpdatePending = false;
+      histogramHover = null;
+      histogramTooltip.style.display = 'none';
       lastHistogramChannels = [];
       for (const channel of histogramChannels) {
         const plot = channel.canvas.getContext('2d');
@@ -700,7 +727,7 @@
         slot.el.hidden = !channel;
         if (!channel) return;
         slot.title.textContent = channel.label;
-        drawHistogram(slot.canvas, channel);
+        drawHistogram(slot.canvas, channel, histogramHover && histogramHover.index === index ? histogramHover.bin : null);
         renderStats(slot.stats, channel.stats);
       });
     }
@@ -710,7 +737,7 @@
       renderHistogramChannels(lastHistogramChannels);
     }
 
-    function drawHistogram(plotCanvas, channel) {
+    function drawHistogram(plotCanvas, channel, hoverBin = null) {
       const plot = plotCanvas.getContext('2d');
       const cssWidth = Math.max(1, Math.floor(plotCanvas.clientWidth || plotCanvas.width));
       const cssHeight = Math.max(1, Math.floor(plotCanvas.clientHeight || plotCanvas.height));
@@ -749,6 +776,57 @@
       plot.strokeStyle = channel.stroke;
       plot.lineWidth = Math.max(1, ratio);
       plot.stroke();
+
+      if (hoverBin !== null) {
+        const x = (hoverBin + 0.5) * binWidth;
+        plot.strokeStyle = '#f2f2f2';
+        plot.lineWidth = Math.max(1, ratio);
+        plot.beginPath();
+        plot.moveTo(x, 0);
+        plot.lineTo(x, height);
+        plot.stroke();
+      }
+    }
+
+    function updateHistogramHover(slot, index, event) {
+      const channel = lastHistogramChannels[index];
+      if (!channel || !channel.bins.length) {
+        clearHistogramHover();
+        return;
+      }
+      const rect = slot.canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        clearHistogramHover();
+        return;
+      }
+      const x = clamp(event.clientX - rect.left, 0, rect.width);
+      const bin = clamp(Math.round((x / rect.width) * (channel.bins.length - 1)), 0, channel.bins.length - 1);
+      const value = channel.displayValue(bin);
+      histogramHover = { index, bin };
+      renderHistogramChannels(lastHistogramChannels);
+      showHistogramTooltip(event.clientX, event.clientY, `Value ${value}`);
+    }
+
+    function showHistogramTooltip(clientX, clientY, text) {
+      histogramTooltip.textContent = text;
+      histogramTooltip.style.display = 'block';
+      const margin = 12;
+      const rect = histogramTooltip.getBoundingClientRect();
+      let left = clientX + margin;
+      let top = clientY + margin;
+      if (left + rect.width > window.innerWidth) left = clientX - rect.width - margin;
+      if (top + rect.height > window.innerHeight) top = clientY - rect.height - margin;
+      histogramTooltip.style.left = `${Math.max(4, left)}px`;
+      histogramTooltip.style.top = `${Math.max(4, top)}px`;
+    }
+
+    function clearHistogramHover() {
+      const hadHover = !!histogramHover;
+      histogramHover = null;
+      histogramTooltip.style.display = 'none';
+      if (hadHover && lastHistogramChannels.length) {
+        renderHistogramChannels(lastHistogramChannels);
+      }
     }
 
     function renderStats(statsEl, stats) {
@@ -853,6 +931,14 @@
         vscode.postMessage({ type: 'saveImage', data: await blob.arrayBuffer() });
       }, 'image/png');
     });
+    histogramChannels.forEach((slot, index) => {
+      slot.canvas.classList.add('hoverable');
+      slot.canvas.addEventListener('mousemove', (event) => updateHistogramHover(slot, index, event));
+      slot.canvas.addEventListener('mouseleave', clearHistogramHover);
+    });
+    histogramPanel.addEventListener('scroll', clearHistogramHover);
+    window.addEventListener('blur', clearHistogramHover);
+    window.addEventListener('resize', clearHistogramHover);
     canvas.addEventListener('click', (event) => {
       if (!virtualTouchEnabled || !hasFrame || !lastImageSize || !canvas.width || !canvas.height) return;
       const point = mapCanvasClickToOriginal(event);

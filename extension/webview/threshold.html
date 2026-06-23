@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Threshold Editor</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      color: var(--vscode-foreground);
+      background: var(--vscode-editor-background);
+      font: var(--vscode-font-size) var(--vscode-font-family);
+    }
+    body { display: flex; flex-direction: column; min-width: 360px; }
+    button, select, input {
+      font: inherit;
+      color: var(--vscode-button-foreground);
+    }
+    button, .file-button {
+      height: 28px;
+      min-width: 28px;
+      padding: 0 10px;
+      border: 1px solid var(--vscode-button-border, transparent);
+      border-radius: 3px;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      cursor: pointer;
+      line-height: 26px;
+      white-space: nowrap;
+    }
+    button:hover:enabled, .file-button:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+    select {
+      height: 28px;
+      min-width: 132px;
+      border: 1px solid var(--vscode-dropdown-border);
+      border-radius: 3px;
+      background: var(--vscode-dropdown-background);
+      color: var(--vscode-dropdown-foreground);
+      padding: 0 28px 0 8px;
+    }
+    input[type="range"] {
+      width: 100%;
+      min-width: 120px;
+    }
+    input[type="checkbox"] {
+      margin: 0;
+    }
+    input[type="text"] {
+      height: 28px;
+      min-width: 0;
+      border: 1px solid var(--vscode-input-border, transparent);
+      border-radius: 3px;
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      padding: 0 8px;
+      font-family: var(--vscode-editor-font-family, monospace);
+    }
+    button:focus-visible, select:focus-visible, input:focus-visible, .file-button:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+    }
+    #toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 42px;
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--vscode-panel-border);
+      background: var(--vscode-sideBar-background);
+      overflow-x: auto;
+    }
+    .file-button input { display: none; }
+    .spacer { flex: 1 1 auto; }
+    #status {
+      flex: 0 0 auto;
+      max-width: 34ch;
+      overflow: hidden;
+      color: var(--vscode-descriptionForeground);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #main {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+    }
+    #image-row {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+    .viewer {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 28px 1fr;
+      border-right: 1px solid var(--vscode-panel-border);
+    }
+    .viewer:last-child { border-right: 0; }
+    .viewer-title {
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-editorGroupHeader-tabsBackground);
+      font-size: 12px;
+    }
+    .canvas-wrap {
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: auto;
+      background: var(--vscode-editor-background);
+    }
+    canvas {
+      display: block;
+      width: auto;
+      height: auto;
+      max-width: calc(100% - 20px);
+      max-height: calc(100% - 20px);
+      object-fit: contain;
+      image-rendering: pixelated;
+      background: #000;
+    }
+    #controls {
+      display: grid;
+      gap: 9px;
+      padding: 10px;
+      background: var(--vscode-editor-background);
+      border-top: 1px solid var(--vscode-panel-border);
+      max-height: 42vh;
+      min-height: 0;
+      overflow: auto;
+    }
+    .control-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+    .check {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 28px;
+      color: var(--vscode-foreground);
+      white-space: nowrap;
+    }
+    .slider-grid {
+      display: grid;
+      grid-template-columns: max-content minmax(120px, 1fr) 5ch;
+      gap: 7px 10px;
+      align-items: center;
+    }
+    .slider-grid[hidden] { display: none; }
+    .slider-grid label {
+      color: var(--vscode-descriptionForeground);
+      white-space: nowrap;
+    }
+    .value {
+      color: var(--vscode-foreground);
+      font-family: var(--vscode-editor-font-family, monospace);
+      text-align: right;
+    }
+    .output-row {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr) auto auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .output-row label {
+      color: var(--vscode-descriptionForeground);
+      white-space: nowrap;
+    }
+    #drop-hint {
+      position: absolute;
+      inset: 52px 10px 142px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      border: 1px dashed var(--vscode-focusBorder);
+      background: var(--vscode-editorWidget-background);
+      color: var(--vscode-foreground);
+      pointer-events: none;
+      z-index: 3;
+    }
+    body.dragging #drop-hint { display: flex; }
+    @media (max-width: 720px) {
+      body { min-width: 0; }
+      #main { grid-template-rows: minmax(0, 1fr) auto; }
+      #image-row { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+      .viewer { border-right: 0; border-bottom: 1px solid var(--vscode-panel-border); }
+      .viewer:last-child { border-bottom: 0; }
+      .control-header, .output-row { grid-template-columns: 1fr; align-items: stretch; }
+      .control-header { display: grid; }
+      .output-row { display: grid; }
+      .slider-grid { grid-template-columns: minmax(7ch, max-content) minmax(120px, 1fr) 5ch; }
+      #status { max-width: none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <label class="file-button" title="Open Image File">
+      Open
+      <input id="file-input" type="file" accept="image/bmp,image/jpeg,image/png,image/ppm,image/x-portable-pixmap,image/*">
+    </label>
+    <button id="preview-btn" title="Load latest Preview frame">Frame Buffer</button>
+    <button id="reset-btn" title="Reset sliders">Reset</button>
+    <span class="spacer"></span>
+    <span id="status">No image loaded</span>
+  </div>
+
+  <div id="main">
+    <div id="image-row">
+      <section class="viewer">
+        <div class="viewer-title">Source Image</div>
+        <div class="canvas-wrap"><canvas id="source-canvas"></canvas></div>
+      </section>
+      <section class="viewer">
+        <div class="viewer-title">Binary Image (white pixels are tracked pixels)</div>
+        <div class="canvas-wrap"><canvas id="binary-canvas"></canvas></div>
+      </section>
+    </div>
+
+    <div id="controls">
+      <div class="control-header">
+        <select id="mode-select" title="Threshold color space" aria-label="Threshold color space">
+          <option value="grayscale">Grayscale</option>
+          <option value="lab">LAB</option>
+        </select>
+        <label class="check"><input id="invert-input" type="checkbox"> Invert</label>
+      </div>
+
+      <div id="gray-sliders" class="slider-grid">
+        <label for="g-min">Grayscale Min</label>
+        <input id="g-min" type="range" min="0" max="255" step="1" value="0">
+        <span id="g-min-value" class="value">0</span>
+        <label for="g-max">Grayscale Max</label>
+        <input id="g-max" type="range" min="0" max="255" step="1" value="255">
+        <span id="g-max-value" class="value">255</span>
+      </div>
+
+      <div id="lab-sliders" class="slider-grid" hidden>
+        <label for="l-min">L Min</label>
+        <input id="l-min" type="range" min="0" max="100" step="1" value="0">
+        <span id="l-min-value" class="value">0</span>
+        <label for="l-max">L Max</label>
+        <input id="l-max" type="range" min="0" max="100" step="1" value="100">
+        <span id="l-max-value" class="value">100</span>
+        <label for="a-min">A Min</label>
+        <input id="a-min" type="range" min="-128" max="127" step="1" value="-128">
+        <span id="a-min-value" class="value">-128</span>
+        <label for="a-max">A Max</label>
+        <input id="a-max" type="range" min="-128" max="127" step="1" value="127">
+        <span id="a-max-value" class="value">127</span>
+        <label for="b-min">B Min</label>
+        <input id="b-min" type="range" min="-128" max="127" step="1" value="-128">
+        <span id="b-min-value" class="value">-128</span>
+        <label for="b-max">B Max</label>
+        <input id="b-max" type="range" min="-128" max="127" step="1" value="127">
+        <span id="b-max-value" class="value">127</span>
+      </div>
+
+      <div class="output-row">
+        <label id="threshold-label" for="threshold-output">Grayscale Threshold</label>
+        <input id="threshold-output" type="text" readonly value="(0, 255)">
+        <button id="copy-btn" title="Copy threshold tuple">Copy</button>
+        <button id="apply-btn" title="Replace selected threshold tuple">Apply</button>
+      </div>
+    </div>
+  </div>
+  <div id="drop-hint">Drop an image file to load it</div>
+
+  <script>
+    const vscode = acquireVsCodeApi();
+    const fileInput = document.getElementById('file-input');
+    const previewBtn = document.getElementById('preview-btn');
+    const resetBtn = document.getElementById('reset-btn');
+    const statusEl = document.getElementById('status');
+    const sourceCanvas = document.getElementById('source-canvas');
+    const binaryCanvas = document.getElementById('binary-canvas');
+    const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true });
+    const binaryCtx = binaryCanvas.getContext('2d', { willReadFrequently: true });
+    const modeSelect = document.getElementById('mode-select');
+    const invertInput = document.getElementById('invert-input');
+    const graySliders = document.getElementById('gray-sliders');
+    const labSliders = document.getElementById('lab-sliders');
+    const thresholdLabel = document.getElementById('threshold-label');
+    const thresholdOutput = document.getElementById('threshold-output');
+    const copyBtn = document.getElementById('copy-btn');
+    const applyBtn = document.getElementById('apply-btn');
+    const sliders = {
+      gMin: bindSlider('g-min', 'g-min-value'),
+      gMax: bindSlider('g-max', 'g-max-value'),
+      lMin: bindSlider('l-min', 'l-min-value'),
+      lMax: bindSlider('l-max', 'l-max-value'),
+      aMin: bindSlider('a-min', 'a-min-value'),
+      aMax: bindSlider('a-max', 'a-max-value'),
+      bMin: bindSlider('b-min', 'b-min-value'),
+      bMax: bindSlider('b-max', 'b-max-value')
+    };
+
+    let sourceImageData = null;
+    let sourceName = '';
+    let renderFrame = 0;
+    let canApplyToEditor = false;
+    let lastToastTimer = 0;
+
+    window.addEventListener('message', event => {
+      const msg = event.data || {};
+      if (msg.type === 'configure') {
+        applyConfig(msg.config || {});
+      } else if (msg.type === 'previewFrame') {
+        const frameData = normalizeFrameData(msg.data, msg.byteLength);
+        if (frameData) loadImageBlob(new Blob([frameData], { type: imageMimeFromBytes(frameData) }), msg.name || 'Preview Frame');
+      } else if (msg.type === 'frameUnavailable') {
+        setStatus(msg.message || 'No preview frame available');
+      } else if (msg.type === 'copied') {
+        toast('Copied threshold');
+      } else if (msg.type === 'applied') {
+        toast('Updated selected tuple');
+      }
+    });
+
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (file) loadImageBlob(file, file.name);
+      fileInput.value = '';
+    });
+
+    previewBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'requestPreviewFrame' });
+    });
+
+    resetBtn.addEventListener('click', () => {
+      if (modeSelect.value === 'lab') {
+        setLabValues([0, 100, -128, 127, -128, 127]);
+      } else {
+        setGrayValues([0, 255]);
+      }
+      scheduleRender();
+    });
+
+    modeSelect.addEventListener('change', () => {
+      updateModeUi();
+      scheduleRender();
+    });
+    invertInput.addEventListener('change', scheduleRender);
+
+    for (const slider of Object.values(sliders)) {
+      slider.input.addEventListener('input', () => {
+        slider.value.textContent = slider.input.value;
+        scheduleRender();
+      });
+    }
+
+    copyBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'copyThreshold', text: thresholdOutput.value });
+    });
+
+    applyBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'applyThreshold', text: thresholdOutput.value });
+    });
+
+    window.addEventListener('dragenter', event => {
+      event.preventDefault();
+      document.body.classList.add('dragging');
+    });
+    window.addEventListener('dragover', event => {
+      event.preventDefault();
+      document.body.classList.add('dragging');
+    });
+    window.addEventListener('dragleave', event => {
+      if (event.target === document.body || event.clientX <= 0 || event.clientY <= 0 ||
+          event.clientX >= window.innerWidth || event.clientY >= window.innerHeight) {
+        document.body.classList.remove('dragging');
+      }
+    });
+    window.addEventListener('drop', event => {
+      event.preventDefault();
+      document.body.classList.remove('dragging');
+      const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+      if (file) loadImageBlob(file, file.name);
+    });
+
+    function bindSlider(inputId, valueId) {
+      return {
+        input: document.getElementById(inputId),
+        value: document.getElementById(valueId)
+      };
+    }
+
+    function applyConfig(config) {
+      canApplyToEditor = config.canApplyToEditor === true;
+      applyBtn.disabled = !canApplyToEditor;
+      if (config.mode === 'lab') {
+        modeSelect.value = 'lab';
+        if (Array.isArray(config.values) && config.values.length >= 6) {
+          setLabValues(config.values);
+        }
+      } else if (config.mode === 'grayscale') {
+        modeSelect.value = 'grayscale';
+        if (Array.isArray(config.values) && config.values.length >= 2) {
+          setGrayValues(config.values);
+        }
+      }
+      updateModeUi();
+      scheduleRender();
+    }
+
+    function setGrayValues(values) {
+      setSlider(sliders.gMin, values[0]);
+      setSlider(sliders.gMax, values[1]);
+    }
+
+    function setLabValues(values) {
+      setSlider(sliders.lMin, values[0]);
+      setSlider(sliders.lMax, values[1]);
+      setSlider(sliders.aMin, values[2]);
+      setSlider(sliders.aMax, values[3]);
+      setSlider(sliders.bMin, values[4]);
+      setSlider(sliders.bMax, values[5]);
+    }
+
+    function setSlider(slider, value) {
+      const input = slider.input;
+      const min = Number(input.min);
+      const max = Number(input.max);
+      const next = clamp(Math.round(Number(value) || 0), min, max);
+      input.value = String(next);
+      slider.value.textContent = String(next);
+    }
+
+    function updateModeUi() {
+      const lab = modeSelect.value === 'lab';
+      graySliders.hidden = lab;
+      labSliders.hidden = !lab;
+      thresholdLabel.textContent = lab ? 'LAB Threshold' : 'Grayscale Threshold';
+      updateThresholdText();
+    }
+
+    function updateThresholdText() {
+      thresholdOutput.value = modeSelect.value === 'lab'
+        ? `(${number('lMin')}, ${number('lMax')}, ${number('aMin')}, ${number('aMax')}, ${number('bMin')}, ${number('bMax')})`
+        : `(${number('gMin')}, ${number('gMax')})`;
+    }
+
+    async function loadImageBlob(blob, name) {
+      try {
+        if (isPpmImage(blob, name)) {
+          loadImageData(parsePpmImage(new Uint8Array(await blob.arrayBuffer())), name);
+          return;
+        }
+        const bitmap = await createImageBitmap(blob);
+        sourceCanvas.width = bitmap.width;
+        sourceCanvas.height = bitmap.height;
+        binaryCanvas.width = bitmap.width;
+        binaryCanvas.height = bitmap.height;
+        sourceCtx.clearRect(0, 0, bitmap.width, bitmap.height);
+        sourceCtx.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        sourceImageData = sourceCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+        sourceName = name || 'Image';
+        setStatus(`${sourceName} - ${sourceCanvas.width}x${sourceCanvas.height}`);
+        scheduleRender(true);
+      } catch (error) {
+        console.error(error);
+        setStatus('Unable to load image');
+      }
+    }
+
+    function loadImageData(imageData, name) {
+      sourceCanvas.width = imageData.width;
+      sourceCanvas.height = imageData.height;
+      binaryCanvas.width = imageData.width;
+      binaryCanvas.height = imageData.height;
+      sourceCtx.putImageData(imageData, 0, 0);
+      sourceImageData = sourceCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+      sourceName = name || 'Image';
+      setStatus(`${sourceName} - ${sourceCanvas.width}x${sourceCanvas.height}`);
+      scheduleRender(true);
+    }
+
+    function isPpmImage(blob, name) {
+      return /\.ppm$/i.test(name || '') || /portable-pixmap|x-portable-pixmap/i.test(blob.type || '');
+    }
+
+    function parsePpmImage(bytes) {
+      let offset = 0;
+      const readToken = () => {
+        while (offset < bytes.length) {
+          const value = bytes[offset];
+          if (value === 35) {
+            while (offset < bytes.length && bytes[offset] !== 10 && bytes[offset] !== 13) offset++;
+          } else if (value <= 32) {
+            offset++;
+          } else {
+            break;
+          }
+        }
+        const start = offset;
+        while (offset < bytes.length && bytes[offset] > 32 && bytes[offset] !== 35) offset++;
+        return new TextDecoder('ascii').decode(bytes.slice(start, offset));
+      };
+      const magic = readToken();
+      const width = Number(readToken());
+      const height = Number(readToken());
+      const maxValue = Number(readToken());
+      if ((magic !== 'P6' && magic !== 'P3') || !width || !height || !maxValue) {
+        throw new Error('Invalid PPM image');
+      }
+      const rgba = new Uint8ClampedArray(width * height * 4);
+      if (magic === 'P3') {
+        for (let i = 0; i < width * height; i++) {
+          rgba[(i * 4)] = scalePpmSample(Number(readToken()), maxValue);
+          rgba[(i * 4) + 1] = scalePpmSample(Number(readToken()), maxValue);
+          rgba[(i * 4) + 2] = scalePpmSample(Number(readToken()), maxValue);
+          rgba[(i * 4) + 3] = 255;
+        }
+      } else {
+        if (offset < bytes.length && bytes[offset] <= 32) offset++;
+        const twoByte = maxValue > 255;
+        for (let i = 0; i < width * height; i++) {
+          const base = i * 4;
+          rgba[base] = scalePpmSample(readPpmSample(bytes, offset, twoByte), maxValue);
+          offset += twoByte ? 2 : 1;
+          rgba[base + 1] = scalePpmSample(readPpmSample(bytes, offset, twoByte), maxValue);
+          offset += twoByte ? 2 : 1;
+          rgba[base + 2] = scalePpmSample(readPpmSample(bytes, offset, twoByte), maxValue);
+          offset += twoByte ? 2 : 1;
+          rgba[base + 3] = 255;
+        }
+      }
+      return new ImageData(rgba, width, height);
+    }
+
+    function readPpmSample(bytes, offset, twoByte) {
+      return twoByte ? ((bytes[offset] << 8) | bytes[offset + 1]) : bytes[offset];
+    }
+
+    function scalePpmSample(value, maxValue) {
+      return clamp(Math.round((value * 255) / maxValue), 0, 255);
+    }
+
+    function scheduleRender(immediate = false) {
+      updateThresholdText();
+      if (!sourceImageData) {
+        clearBinary();
+        return;
+      }
+      if (renderFrame) cancelAnimationFrame(renderFrame);
+      const run = () => {
+        renderFrame = 0;
+        renderThreshold();
+      };
+      if (immediate) run();
+      else renderFrame = requestAnimationFrame(run);
+    }
+
+    function renderThreshold() {
+      if (!sourceImageData) return;
+      const source = sourceImageData.data;
+      const output = binaryCtx.createImageData(sourceImageData.width, sourceImageData.height);
+      const out = output.data;
+      const invert = invertInput.checked;
+      if (modeSelect.value === 'lab') {
+        const lMin = Math.min(number('lMin'), number('lMax'));
+        const lMax = Math.max(number('lMin'), number('lMax'));
+        const aMin = Math.min(number('aMin'), number('aMax'));
+        const aMax = Math.max(number('aMin'), number('aMax'));
+        const bMin = Math.min(number('bMin'), number('bMax'));
+        const bMax = Math.max(number('bMin'), number('bMax'));
+        for (let i = 0; i < source.length; i += 4) {
+          const lab = rgbToLab(source[i], source[i + 1], source[i + 2]);
+          const tracked = (lab[0] >= lMin && lab[0] <= lMax &&
+            lab[1] >= aMin && lab[1] <= aMax &&
+            lab[2] >= bMin && lab[2] <= bMax) !== invert;
+          writeBinaryPixel(out, i, tracked, source[i + 3]);
+        }
+      } else {
+        const gMin = Math.min(number('gMin'), number('gMax'));
+        const gMax = Math.max(number('gMin'), number('gMax'));
+        for (let i = 0; i < source.length; i += 4) {
+          const gray = rgbToLuma(source[i], source[i + 1], source[i + 2]);
+          const tracked = (gray >= gMin && gray <= gMax) !== invert;
+          writeBinaryPixel(out, i, tracked, source[i + 3]);
+        }
+      }
+      binaryCtx.putImageData(output, 0, 0);
+    }
+
+    function writeBinaryPixel(out, index, tracked, alpha) {
+      const value = tracked ? 255 : 0;
+      out[index] = value;
+      out[index + 1] = value;
+      out[index + 2] = value;
+      out[index + 3] = alpha;
+    }
+
+    function clearBinary() {
+      binaryCtx.clearRect(0, 0, binaryCanvas.width, binaryCanvas.height);
+    }
+
+    function number(key) {
+      return Number(sliders[key].input.value);
+    }
+
+    function rgbToLuma(r, g, b) {
+      return clamp(Math.round((0.299 * r) + (0.587 * g) + (0.114 * b)), 0, 255);
+    }
+
+    function rgbToLab(r, g, b) {
+      const sr = pivotRgb(r / 255);
+      const sg = pivotRgb(g / 255);
+      const sb = pivotRgb(b / 255);
+      const x = ((0.4124564 * sr) + (0.3575761 * sg) + (0.1804375 * sb)) / 0.95047;
+      const y = (0.2126729 * sr) + (0.7151522 * sg) + (0.0721750 * sb);
+      const z = ((0.0193339 * sr) + (0.1191920 * sg) + (0.9503041 * sb)) / 1.08883;
+      const fx = pivotLab(x);
+      const fy = pivotLab(y);
+      const fz = pivotLab(z);
+      const l = clamp(Math.round((116 * fy) - 16), 0, 100);
+      const a = clamp(Math.round(500 * (fx - fy)), -128, 127);
+      const bb = clamp(Math.round(200 * (fy - fz)), -128, 127);
+      return [l, a, bb];
+    }
+
+    function pivotRgb(value) {
+      return value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+    }
+
+    function pivotLab(value) {
+      return value > 0.008856 ? Math.cbrt(value) : ((7.787037 * value) + (16 / 116));
+    }
+
+    function normalizeFrameData(data, byteLength) {
+      if (data instanceof ArrayBuffer) return new Uint8Array(data);
+      if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      if (Array.isArray(data)) return new Uint8Array(data);
+      if (!data || typeof data !== 'object') return null;
+
+      if (data.type === 'Buffer' && Array.isArray(data.data)) {
+        return new Uint8Array(data.data);
+      }
+
+      const declaredLength = Number.isInteger(byteLength) ? byteLength : Number(data.byteLength ?? data.length);
+      if (Number.isInteger(declaredLength) && declaredLength >= 0) {
+        const out = new Uint8Array(declaredLength);
+        for (let i = 0; i < declaredLength; i++) out[i] = data[i] || 0;
+        return out;
+      }
+
+      const keys = Object.keys(data).filter((key) => /^\d+$/.test(key)).sort((a, b) => Number(a) - Number(b));
+      if (!keys.length) return null;
+      const out = new Uint8Array(keys.length);
+      for (let i = 0; i < keys.length; i++) out[i] = data[keys[i]] || 0;
+      return out;
+    }
+
+    function imageMimeFromBytes(data) {
+      if (data.length >= 8 &&
+          data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47 &&
+          data[4] === 0x0d && data[5] === 0x0a && data[6] === 0x1a && data[7] === 0x0a) {
+        return 'image/png';
+      }
+      if (data.length >= 2 && data[0] === 0xff && data[1] === 0xd8) {
+        return 'image/jpeg';
+      }
+      return 'image/png';
+    }
+
+    function toast(text) {
+      setStatus(text);
+      if (lastToastTimer) clearTimeout(lastToastTimer);
+      lastToastTimer = setTimeout(() => {
+        lastToastTimer = 0;
+        setStatus(sourceImageData ? `${sourceName} - ${sourceCanvas.width}x${sourceCanvas.height}` : 'No image loaded');
+      }, 1400);
+    }
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+      statusEl.title = text;
+    }
+
+    function clamp(value, min, max) {
+      return Math.min(max, Math.max(min, value));
+    }
+
+    updateModeUi();
+    applyBtn.disabled = true;
+    vscode.postMessage({ type: 'ready' });
+  </script>
+</body>
+</html>
