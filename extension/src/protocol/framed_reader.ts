@@ -29,7 +29,7 @@ export interface FramedMessageCallbacks {
   /** Called for REQUEST (0x01), RESPONSE (0x02), EVENT (0x03) messages. */
   onMessage: (msg: BackendMessage, rawId?: number) => void;
   /** Called for FRAME (0x04) messages: frameId extracted from payload header, JPEG data, optional profiling timestamps. */
-  onFrame: (frameId: number, data: ArrayBuffer, chunkTs?: number, dispatchTs?: number) => void;
+  onFrame: (frameId: number, data: Uint8Array, chunkTs?: number, dispatchTs?: number) => void;
 }
 
 export class FramedMessageReader {
@@ -175,10 +175,8 @@ export class FramedMessageReader {
           }
         }
         const frame = end === len ? jpeg : jpeg.subarray(0, end);
-        const ab = frame.byteOffset === 0 && frame.byteLength === frame.buffer.byteLength
-          ? frame.buffer as ArrayBuffer
-          : frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength) as ArrayBuffer;
-        this.callbacks.onFrame(frameId, ab, (this as any)._chunkTs, dispatchTs);
+        const view = new Uint8Array(frame.buffer, frame.byteOffset, frame.byteLength);
+        this.callbacks.onFrame(frameId, view, (this as any)._chunkTs, dispatchTs);
       }
     }
     // Unknown types: silently skip

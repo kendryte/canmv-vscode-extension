@@ -91,19 +91,14 @@ func (c *Conn) Event(name string, params interface{}) error {
 
 func (c *Conn) Frame(frameID uint32, jpeg []byte) error {
 	payloadLen := 4 + len(jpeg)
-	header := make([]byte, headerSize)
-	header[0], header[1], header[2] = Magic[0], Magic[1], MsgFrame
-	binary.LittleEndian.PutUint32(header[3:], uint32(payloadLen))
-
-	frameIDBytes := make([]byte, 4)
-	binary.LittleEndian.PutUint32(frameIDBytes, frameID)
+	prefix := make([]byte, headerSize+4)
+	prefix[0], prefix[1], prefix[2] = Magic[0], Magic[1], MsgFrame
+	binary.LittleEndian.PutUint32(prefix[3:], uint32(payloadLen))
+	binary.LittleEndian.PutUint32(prefix[headerSize:], frameID)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, err := c.w.Write(header); err != nil {
-		return err
-	}
-	if _, err := c.w.Write(frameIDBytes); err != nil {
+	if _, err := c.w.Write(prefix); err != nil {
 		return err
 	}
 	_, err := c.w.Write(jpeg)

@@ -118,13 +118,28 @@ export function activate(context: vscode.ExtensionContext) {
     statusItem.text = '$(debug-start) CanMV';
     statusItem.tooltip = 'Connected';
   };
+  const boardSupportsReplInput = () => {
+    return boardService.boardInfo()?.capabilities?.replInput === true;
+  };
+  const boardSupportsFileExplorer = () => {
+    return boardService.boardInfo()?.capabilities?.listDir === true;
+  };
+  const boardHasCapabilitiesProtocol = () => {
+    return (boardService.boardInfo()?.protocolVersion ?? 0) > 0;
+  };
+  const assumeScriptRunningForPreview = () => {
+    return scriptRunning || !boardHasCapabilitiesProtocol();
+  };
   const updateTerminalInputState = () => {
-    const canInput = connected && !scriptRunning;
+    const replInputSupported = boardSupportsReplInput();
+    const canInput = connected && replInputSupported && !scriptRunning;
     const reason = disconnected
       ? 'Connect board to use REPL input'
-      : scriptRunning
-        ? 'Script is running; press Ctrl-C to stop it'
-        : '';
+      : !replInputSupported
+        ? 'REPL input is not supported by this firmware'
+        : scriptRunning
+          ? 'Script is running; press Ctrl-C to stop it'
+          : '';
     terminalViewProvider?.setInputEnabled(canInput, reason, connected && scriptRunning);
   };
   setConnectionContexts(session.state);
@@ -465,7 +480,7 @@ export function activate(context: vscode.ExtensionContext) {
     logInfo('Preview', 'Auto-starting');
     try {
       ensurePreviewPanel();
-      const started = await getVideoService()?.startPreview();
+      const started = await getVideoService()?.startPreview(undefined, undefined, { assumeScriptRunning: assumeScriptRunningForPreview() });
       if (started) {
         previewAutoRetryCount = 0;
         logInfo('Preview', 'Auto-started');
@@ -497,7 +512,7 @@ export function activate(context: vscode.ExtensionContext) {
       return;
     }
     ensurePreviewPanel();
-    const started = await getVideoService()?.startPreview();
+    const started = await getVideoService()?.startPreview(undefined, undefined, { assumeScriptRunning: assumeScriptRunningForPreview() });
     if (started) {
       updatePreviewWatchdog();
       updateVirtualTouchRefreshTimer();
@@ -601,6 +616,10 @@ export function activate(context: vscode.ExtensionContext) {
     if (scriptRunning) {
       showScriptAlreadyRunning();
       return false;
+    }
+    if (!boardHasCapabilitiesProtocol()) {
+      logDebug('Script', 'Skipping scriptRunning precheck: legacy firmware has no capabilities protocol');
+      return true;
     }
     const runningResult = await session.request(createRequest(Methods.scriptRunning, {}));
     if (!isResponse(runningResult)) {
@@ -754,6 +773,10 @@ export function activate(context: vscode.ExtensionContext) {
       updateTerminalInputState();
       return;
     }
+    if (!boardSupportsReplInput()) {
+      updateTerminalInputState();
+      return;
+    }
     const req = createRequest(Methods.terminalInput, { text });
     const activeBackend = backend;
     if (activeBackend?.notify) {
@@ -785,6 +808,7 @@ export function activate(context: vscode.ExtensionContext) {
       const info = boardService.boardInfo();
       boardReady = false;
       if (info) {
+        explorer.setConnectionState(true, boardSupportsFileExplorer());
         updateBoardStatus();
         previewPanel?.sendBoardInfo(info);
       }
@@ -889,16 +913,32 @@ export function activate(context: vscode.ExtensionContext) {
       if (!editor) return;
       const text = editor.document.getText();
       const data = new TextEncoder().encode(text);
-      await fileService.writeFile('/sdcard/main.py', data);
-      vscode.window.showInformationMessage('CanMV: Saved as /sdcard/main.py');
+      try {
+        const ok = await fileService.writeFile('/sdcard/main.py', data);
+        if (!ok) {
+          vscode.window.showWarningMessage('CanMV: Save as /sdcard/main.py was rejected by the board');
+          return;
+        }
+        vscode.window.showInformationMessage('CanMV: Saved as /sdcard/main.py');
+      } catch (err) {
+        showRemoteOperationError('Save as /sdcard/main.py', err);
+      }
     }),
     vscode.commands.registerCommand('canmv.saveAsBootPy', async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
       const text = editor.document.getText();
       const data = new TextEncoder().encode(text);
-      await fileService.writeFile('/boot.py', data);
-      vscode.window.showInformationMessage('CanMV: Saved as /boot.py');
+      try {
+        const ok = await fileService.writeFile('/boot.py', data);
+        if (!ok) {
+          vscode.window.showWarningMessage('CanMV: Save as /boot.py was rejected by the board');
+          return;
+        }
+        vscode.window.showInformationMessage('CanMV: Saved as /boot.py');
+      } catch (err) {
+        showRemoteOperationError('Save as /boot.py', err);
+      }
     }),
     vscode.commands.registerCommand('canmv.openTool', (toolId?: string) => {
       if (toolId) {
@@ -1131,8 +1171,8 @@ export function activate(context: vscode.ExtensionContext) {
   // Auto-refresh explorer on connection state change
   session.onStateChange((state) => {
     previewPanel?.sendState(state);
-    explorer.setConnected(state === 'connected' || state === 'streaming');
     const nextConnected = state === 'connected' || state === 'streaming';
+    explorer.setConnectionState(nextConnected, !nextConnected || boardSupportsFileExplorer());
     setConnectionContexts(state);
     updatePreviewWatchdog();
     updateVirtualTouchRefreshTimer();

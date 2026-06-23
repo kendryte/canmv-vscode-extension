@@ -86,7 +86,7 @@ export const ErrorCodes = {
 
 export interface FrameAvailableParams {
   streamId: string;
-  data: ArrayBuffer;
+  data: ArrayBuffer | Uint8Array;
 }
 
 export interface ScriptOutputParams {

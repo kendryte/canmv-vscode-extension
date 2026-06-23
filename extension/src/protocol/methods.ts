@@ -95,6 +95,7 @@ export const Methods = {
     result: {} as { status: 'ok' | 'error'; message?: string },
     errors: {
       2004: 'Board not connected',
+      2005: 'REPL input unsupported',
     },
   },
   /** Query virtual IDE touch state on the board. */
@@ -148,7 +149,7 @@ export const Methods = {
     method: 'io.listDir' as const,
     params: {} as { path: string },
     result: {} as { entries: { name: string; type: 'file' | 'directory'; size: number; mtime?: number }[] },
-    errors: { 4001: 'Path not found', 4002: 'Not a directory' },
+    errors: { 4001: 'Path not found', 4002: 'Not a directory', 4008: 'File explorer unsupported' },
   },
   /** Query file metadata on the board. */
   ioQueryFileStat: {
@@ -162,7 +163,7 @@ export const Methods = {
     method: 'io.readFile' as const,
     params: {} as { path: string },
     result: {} as { data?: number[]; dataBase64?: string },
-    errors: { 4001: 'File not found', 4003: 'Read error' },
+    errors: { 4001: 'File not found', 4003: 'Read error', 4008: 'File read unsupported' },
   },
   /** Write file content to the board (full overwrite). */
   ioWriteFile: {

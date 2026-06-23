@@ -39,9 +39,8 @@ export class PreviewPanel extends BaseToolPanel {
     this.postMessage({ type: 'boardInfo', ...info });
   }
 
-  sendFrame(frameId: number, data: ArrayBuffer): void {
-    const bytes = new Uint8Array(data);
-    this.postMessage({ type: 'frame', data: bytes, byteLength: bytes.byteLength, frameId });
+  sendFrame(frameId: number, data: ArrayBuffer | Uint8Array): void {
+    this.postMessage({ type: 'frame', data, byteLength: data.byteLength, frameId });
   }
 
   sendStarted(): void { this.postMessage({ type: 'started' }); }

@@ -15,30 +15,43 @@ const (
 	CmdPrefix = 0x30
 	CtrlD     = 0x04
 
-	CmdScriptExec    = 0x05
-	CmdScriptStop    = 0x06
-	CmdTxInput       = 0x11
-	CmdFBEnable      = 0x0D
-	CmdFWVersion     = 0x80
-	CmdFWVersionFull = 0x91
-	CmdFrameSize     = 0x81
-	CmdFrameDump     = 0x82
-	CmdArchStr       = 0x83
-	CmdQueryFileStat = 0xA0
-	CmdVerifyFile    = 0xA1
-	CmdListDir       = 0xA2
-	CmdReadFile      = 0xA3
-	CmdDeleteFile    = 0xA4
-	CmdRenameFile    = 0xA5
-	CmdMkdir         = 0xA6
-	CmdRmdir         = 0xA7
+	// Shared by both legacy Qt IDE protocol and capability protocol.
+	CmdScriptExec = 0x05
+	CmdScriptStop = 0x06
+	CmdTxInput    = 0x11
+	CmdFBEnable   = 0x0D
+	CmdFWVersion  = 0x80
+	CmdFrameSize  = 0x81
+	CmdFrameDump  = 0x82
+	CmdArchStr    = 0x83
+	CmdTxBufLen   = 0x8E
+	CmdTxBuf      = 0x8F
+	CmdVerifyFile = 0xA1
+
+	// Legacy-only commands. Keep their wire semantics compatible with old IDEs.
+	CmdSysReset      = 0x0C
+	CmdCreateFile    = 0x20
+	CmdWriteFile     = 0x21
 	CmdScriptRunning = 0x87
-	CmdTxBufLen      = 0x8E
-	CmdTxBuf         = 0x8F
-	CmdCapabilities  = 0xAF
-	CmdFileExec      = 0xA8
-	CmdVTouchEvent   = 0x31
-	CmdVTouchStatus  = 0xB0
+	CmdQueryFileStat = 0xA0
+
+	// Capability protocol v2 extensions. Keep this range contiguous; append
+	// new extension-only commands after CmdVTouchEvent.
+	CmdCapabilities   = 0xA2
+	CmdFWVersionFull  = 0xA3
+	CmdScriptStatus   = 0xA4
+	CmdQueryFileStat2 = 0xA5
+	CmdListDir        = 0xA6
+	CmdReadFile       = 0xA7
+	CmdCreateFile2    = 0xA8
+	CmdWriteFile2     = 0xA9
+	CmdDeleteFile     = 0xAA
+	CmdRenameFile     = 0xAB
+	CmdMkdir          = 0xAC
+	CmdRmdir          = 0xAD
+	CmdFileExec       = 0xAE
+	CmdVTouchStatus   = 0xAF
+	CmdVTouchEvent    = 0xB0
 
 	CapListDir      = 1 << 0
 	CapReadFile     = 1 << 1
@@ -49,11 +62,16 @@ const (
 	CapRmdir        = 1 << 6
 	CapFileExec     = 1 << 7
 	CapVirtualTouch = 1 << 8
+	CapReplInput    = 1 << 9
+	CapKnownMask    = CapListDir | CapReadFile | CapWriteFile | CapDeleteFile | CapRenameFile | CapMkdir | CapRmdir | CapFileExec | CapVirtualTouch | CapReplInput
+
+	capProtocolVersion = 2
 
 	maxDirPayload   = 8 * 1024 * 1024
 	maxFileChunk    = 128 * 1024
 	maxFramePayload = 50 * 1024 * 1024
 	maxTxBufPayload = 128 * 1024
+	maxLegacyTxBuf  = 128 * 1024
 )
 
 var responseLen = map[byte]uint32{
@@ -62,6 +80,7 @@ var responseLen = map[byte]uint32{
 	CmdFrameSize:     12,
 	CmdArchStr:       64,
 	CmdScriptRunning: 4,
+	CmdScriptStatus:  4,
 	CmdTxBufLen:      4,
 	CmdCapabilities:  8,
 	CmdVTouchStatus:  20,
@@ -169,6 +188,28 @@ func (b *Board) FWVersionFull() (string, error) {
 	return strings.TrimSpace(strings.TrimRight(string(data), "\x00")), nil
 }
 
+func (b *Board) FWVersion() (string, error) {
+	data, err := b.SendCommand(CmdFWVersion, nil)
+	if err != nil {
+		return "", err
+	}
+	if len(data) < 12 {
+		return "", fmt.Errorf("short firmware version response: got %d bytes", len(data))
+	}
+	major := binary.LittleEndian.Uint32(data[0:4])
+	minor := binary.LittleEndian.Uint32(data[4:8])
+	micro := binary.LittleEndian.Uint32(data[8:12])
+	return fmt.Sprintf("v%d.%d.%d", major, minor, micro), nil
+}
+
+func (b *Board) FWVersionFullOrLegacy() (string, error) {
+	fwFull, err := b.FWVersionFull()
+	if err == nil && fwFull != "" {
+		return fwFull, nil
+	}
+	return b.FWVersion()
+}
+
 func (b *Board) ArchStr() (string, error) {
 	data, err := b.SendCommand(CmdArchStr, nil)
 	if err != nil {
@@ -179,6 +220,17 @@ func (b *Board) ArchStr() (string, error) {
 
 func (b *Board) ScriptRunning() (bool, error) {
 	data, err := b.SendCommand(CmdScriptRunning, nil)
+	if err != nil {
+		return false, err
+	}
+	if len(data) < 4 {
+		return false, nil
+	}
+	return binary.LittleEndian.Uint32(data[:4]) != 0, nil
+}
+
+func (b *Board) ScriptStatus() (bool, error) {
+	data, err := b.SendCommand(CmdScriptStatus, nil)
 	if err != nil {
 		return false, err
 	}
@@ -228,9 +280,17 @@ func (b *Board) SoftReset() error {
 	return b.TxInput([]byte{CtrlD})
 }
 
+func (b *Board) SysReset() error {
+	if err := b.FireCommand(CmdSysReset, 0, nil); err != nil {
+		return err
+	}
+	time.Sleep(100 * time.Millisecond)
+	return nil
+}
+
 func (b *Board) FileExec(path string) error {
 	payload := append([]byte(path), 0)
-	return b.FireCommand(CmdFileExec, 0, payload)
+	return b.FireCommand(CmdFileExec, uint32(len(payload)), payload)
 }
 
 func (b *Board) FBEnable2() error {
@@ -275,21 +335,25 @@ func (b *Board) FrameDump(jpegSize uint32) ([]byte, error) {
 }
 
 func (b *Board) Capabilities() (uint32, uint32, error) {
-	data, err := b.CommandReadWithIdle(CmdCapabilities, responseLen[CmdCapabilities], nil, 256)
+	// Send a harmless NUL payload. Current firmware ignores it, while older
+	// experimental firmware that used this opcode for LIST_DIR can return an
+	// error instead of waiting forever for a path payload.
+	data, err := b.CommandReadWithIdle(CmdCapabilities, 1, []byte{0}, 256)
 	if err != nil {
 		return 0, 0, err
 	}
-	if len(data) < 8 {
+	if len(data) != 8 {
 		return 0, 0, fmt.Errorf("short capabilities response: got %d bytes", len(data))
 	}
-	for offset := len(data) - 8; offset >= 0; offset-- {
-		version := binary.LittleEndian.Uint32(data[offset : offset+4])
-		flags := binary.LittleEndian.Uint32(data[offset+4 : offset+8])
-		if version > 0 && version <= 16 && flags <= 0x00ffffff {
-			return version, flags, nil
-		}
+	version := binary.LittleEndian.Uint32(data[0:4])
+	flags := binary.LittleEndian.Uint32(data[4:8])
+	if version != capProtocolVersion {
+		return 0, 0, fmt.Errorf("unsupported capabilities protocol version: %d", version)
 	}
-	return 0, 0, fmt.Errorf("invalid capabilities response")
+	if flags&^CapKnownMask != 0 {
+		return 0, 0, fmt.Errorf("unknown capabilities flags: 0x%x", flags&^CapKnownMask)
+	}
+	return version, flags, nil
 }
 
 func (b *Board) VirtualTouchStatus() (VirtualTouchStatus, error) {
@@ -321,7 +385,7 @@ func (b *Board) VirtualTouchEvent(event VirtualTouchEvent) error {
 }
 
 func (b *Board) QueryFileStat(path string) (FileStat, error) {
-	data, err := b.CommandRead(CmdQueryFileStat, 0, nulString(path), 16)
+	data, err := b.CommandReadWithPayloadLen(CmdQueryFileStat2, nulString(path), 16)
 	if err != nil {
 		return FileStat{}, err
 	}
@@ -469,7 +533,7 @@ func (b *Board) WriteFile(path string, data []byte, chunkSize uint32) uint32 {
 	binary.LittleEndian.PutUint32(info[0:4], chunkSize)
 	copy(info[4:72], pathBytes)
 	copy(info[72:], sum[:])
-	ack, err := b.CommandRead(0x20, 0, info, 4)
+	ack, err := b.CommandReadWithPayloadLen(CmdCreateFile2, info, 4)
 	if err != nil {
 		return 0xffffffff
 	}
@@ -486,10 +550,7 @@ func (b *Board) WriteFile(path string, data []byte, chunkSize uint32) uint32 {
 			end = len(data)
 		}
 		chunk := data[offset:end]
-		payload := make([]byte, 4, 4+len(chunk))
-		binary.LittleEndian.PutUint32(payload[0:4], uint32(len(chunk)))
-		payload = append(payload, chunk...)
-		ack, err = b.CommandRead(0x21, 0, payload, 4)
+		ack, err = b.CommandReadWithPayloadLen(CmdWriteFile2, chunk, 4)
 		if err != nil || len(ack) < 4 {
 			return 0xffffffff
 		}
@@ -510,7 +571,7 @@ func (b *Board) WriteFile(path string, data []byte, chunkSize uint32) uint32 {
 }
 
 func (b *Board) SimpleFileOp(opcode byte, payload []byte) uint32 {
-	data, err := b.SendCommandWithResponseLen(opcode, 4, payload)
+	data, err := b.CommandReadWithPayloadLen(opcode, payload, 4)
 	if err != nil || len(data) < 4 {
 		return 0xffffffff
 	}
@@ -550,6 +611,46 @@ func (b *Board) DrainTxBuf() ([]byte, error) {
 	return b.ReadTxBuf(length)
 }
 
+func (b *Board) DrainTxBufLegacy() ([]byte, error) {
+	if b == nil || b.port == nil {
+		return nil, nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	raw, err := readWithShortIdleLocked(b.port, 64*1024, 5*time.Millisecond)
+	if err != nil && len(raw) == 0 {
+		return nil, err
+	}
+	if len(raw) > 0 {
+		return raw, nil
+	}
+
+	if err := b.writeCommandLocked(CmdTxBufLen, responseLen[CmdTxBufLen], nil); err != nil {
+		return nil, err
+	}
+	lenBytes := make([]byte, 4)
+	if err := readExact(b.port, lenBytes); err != nil {
+		return nil, err
+	}
+	length := binary.LittleEndian.Uint32(lenBytes)
+	if length == 0 {
+		return nil, nil
+	}
+	if length > maxLegacyTxBuf {
+		return lenBytes, nil
+	}
+
+	if err := b.writeCommandLocked(CmdTxBuf, length, nil); err != nil {
+		return nil, err
+	}
+	data := make([]byte, length)
+	if err := readExact(b.port, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
 func (b *Board) SendCommand(opcode byte, payload []byte) ([]byte, error) {
 	return b.SendCommandWithResponseLen(opcode, responseLen[opcode], payload)
 }
@@ -582,6 +683,10 @@ func (b *Board) CommandRead(opcode byte, responseField uint32, payload []byte, r
 	return data, nil
 }
 
+func (b *Board) CommandReadWithPayloadLen(opcode byte, payload []byte, readLen uint32) ([]byte, error) {
+	return b.CommandRead(opcode, uint32(len(payload)), payload, readLen)
+}
+
 func (b *Board) CommandReadWithIdle(opcode byte, responseField uint32, payload []byte, maxLen uint32) ([]byte, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -599,7 +704,8 @@ func (b *Board) CommandReadWithIdle(opcode byte, responseField uint32, payload [
 func (b *Board) listDirResponse(path string) ([]byte, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if err := b.writeCommandLocked(CmdListDir, 0, nulString(path)); err != nil {
+	request := nulString(path)
+	if err := b.writeCommandLocked(CmdListDir, uint32(len(request)), request); err != nil {
 		return nil, err
 	}
 	header := make([]byte, 12)
@@ -623,7 +729,7 @@ func (b *Board) listDirResponse(path string) ([]byte, error) {
 func (b *Board) readFileResponse(payload []byte) ([]byte, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if err := b.writeCommandLocked(CmdReadFile, 0, payload); err != nil {
+	if err := b.writeCommandLocked(CmdReadFile, uint32(len(payload)), payload); err != nil {
 		return nil, err
 	}
 	header := make([]byte, 12)
@@ -698,6 +804,34 @@ func readWithIdle(port serial.Port, maxLen int) ([]byte, error) {
 		_ = port.SetReadTimeout(30 * time.Millisecond)
 	}
 	_ = port.SetReadTimeout(1 * time.Second)
+	return data, nil
+}
+
+func readWithShortIdleLocked(port serial.Port, maxLen int, timeout time.Duration) ([]byte, error) {
+	if maxLen <= 0 {
+		return nil, nil
+	}
+	_ = port.SetReadTimeout(timeout)
+	defer port.SetReadTimeout(1 * time.Second)
+
+	data := make([]byte, 0, minInt(4096, maxLen))
+	buf := make([]byte, minInt(4096, maxLen))
+	for len(data) < maxLen {
+		if remaining := maxLen - len(data); len(buf) > remaining {
+			buf = buf[:remaining]
+		}
+		n, err := port.Read(buf)
+		if err != nil {
+			if len(data) > 0 {
+				return data, nil
+			}
+			return nil, err
+		}
+		if n == 0 {
+			break
+		}
+		data = append(data, buf[:n]...)
+	}
 	return data, nil
 }
 

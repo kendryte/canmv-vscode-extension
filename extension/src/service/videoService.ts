@@ -15,7 +15,7 @@ import type { Event as ProtocolEvent, ProtocolError } from '../protocol/types';
  * Integrates FrameProfiler when CANMV_PROFILE=1 for end-to-end latency analysis.
  */
 export class VideoService {
-  private latestFrame: ArrayBuffer | null = null;
+  private latestFrame: ArrayBuffer | Uint8Array | null = null;
   private frameSubscription: vscode.Disposable | null = null;
   private profiler = new FrameProfiler();
   private frameCount = 0;
@@ -39,7 +39,7 @@ export class VideoService {
     });
   }
 
-  async startPreview(fps?: number, resolution?: { w: number; h: number }): Promise<boolean> {
+  async startPreview(fps?: number, resolution?: { w: number; h: number }, options?: { assumeScriptRunning?: boolean }): Promise<boolean> {
     if (this.previewActive) {
       return true;
     }
@@ -50,17 +50,19 @@ export class VideoService {
       vscode.window.showWarningMessage('CanMV: Please connect to the board first.');
       return false;
     }
-    const runningResult = await this.session.request(createRequest(Methods.scriptRunning, {}));
-    if (!isResponse(runningResult)) {
-      const err = runningResult as ProtocolError;
-      logWarn('Preview', `Skipped: ${err.error.message}`);
-      vscode.window.showWarningMessage(`CanMV: Cannot enable preview — ${err.error.message}`);
-      return false;
-    }
-    const runningPayload = runningResult.result as { running?: boolean };
-    if (!runningPayload.running) {
-      logDebug('Preview', 'Skipped: no script is running on board');
-      return false;
+    if (!options?.assumeScriptRunning) {
+      const runningResult = await this.session.request(createRequest(Methods.scriptRunning, {}));
+      if (!isResponse(runningResult)) {
+        const err = runningResult as ProtocolError;
+        logWarn('Preview', `Skipped: ${err.error.message}`);
+        vscode.window.showWarningMessage(`CanMV: Cannot enable preview — ${err.error.message}`);
+        return false;
+      }
+      const runningPayload = runningResult.result as { running?: boolean };
+      if (!runningPayload.running) {
+        logDebug('Preview', 'Skipped: no script is running on board');
+        return false;
+      }
     }
 
     const req = createRequest(Methods.startPreview, { fps, resolution });
@@ -70,7 +72,7 @@ export class VideoService {
 
     this.frameSubscription = this.backend.onEvent((event: ProtocolEvent<string>) => {
       if (isFrameEvent(event)) {
-        const params = event.params as { data: ArrayBuffer; frameId: number; chunkTs?: number; dispatchTs?: number };
+        const params = event.params as { data: ArrayBuffer | Uint8Array; frameId: number; chunkTs?: number; dispatchTs?: number };
         this.frameCount = params.frameId;
         this.profiler.startFrame(params.frameId);
         this.profiler.mark(params.frameId, 'ts_chunk', params.chunkTs);
@@ -159,7 +161,7 @@ export class VideoService {
     }
   }
 
-  getLatestFrame(): ArrayBuffer | null {
+  getLatestFrame(): ArrayBuffer | Uint8Array | null {
     return this.latestFrame;
   }
 
