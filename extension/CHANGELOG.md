@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0
+## 0.3.1
 
 - Added localization support for extension commands, views, webviews, and user-facing messages, including Simplified Chinese strings.
 - Improved remote mirror directory management and Pylance configuration handling for device files and stubs.
@@ -16,6 +16,6 @@
 
 ## 0.1.0
 
-- Initial CanMV K230 VS Code integration.
+- Initial CanMV K230 Visual Studio Code integration.
 - Added native Go backend packaging path.
 - Added board detection, script execution, file operations, preview, and terminal support.

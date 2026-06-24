@@ -1,5 +1,5 @@
 {
-  "extension.description": "CanMV K230 development in VS Code: connect, run scripts, preview frames, manage files, and use the board terminal.",
+  "extension.description": "CanMV K230 development in Visual Studio Code: connect, run scripts, preview frames, manage files, and use the board terminal.",
   "canmv.command.connectBoard": "CanMV: Connect Board",
   "canmv.command.disconnectBoard": "CanMV: Disconnect Board",
   "canmv.command.runCurrentScript": "CanMV: Run Active Python Script",

@@ -1,5 +1,5 @@
 {
-  "extension.description": "在 VS Code 中进行 CanMV K230 开发：连接开发板、运行脚本、预览帧、管理文件并使用开发板终端。",
+  "extension.description": "在 Visual Studio Code 中进行 CanMV K230 开发：连接开发板、运行脚本、预览帧、管理文件并使用开发板终端。",
   "canmv.command.connectBoard": "CanMV: 连接开发板",
   "canmv.command.disconnectBoard": "CanMV: 断开开发板",
   "canmv.command.runCurrentScript": "CanMV: 运行当前 Python 脚本",

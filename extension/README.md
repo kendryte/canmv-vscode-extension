@@ -1,8 +1,8 @@
-# CanMV VS Code Extension
+# CanMV for Visual Studio Code
 
-CanMV VS Code Extension brings CanMV K230 board development into the editor. It connects to the board through the bundled native backend, runs MicroPython scripts, streams camera frames, manages files on the device, and provides an integrated board terminal.
+The CanMV for Visual Studio Code extension brings CanMV K230 board development into Visual Studio Code. It connects to the board through the bundled native backend, runs MicroPython scripts, streams camera frames, manages files on the device, and provides an integrated board terminal.
 
-![CanMV VS Code Extension demo](resources/demo.gif)
+![CanMV for Visual Studio Code demo](https://raw.githubusercontent.com/kendryte/canmv-vscode-extension/main/extension/resources/demo.gif)
 
 ## Features
 
@@ -22,7 +22,7 @@ CanMV VS Code Extension brings CanMV K230 board development into the editor. It 
 
 ## Requirements
 
-- VS Code `1.90.0` or newer.
+- Visual Studio Code `1.90.0` or newer.
 - A CanMV K230 board connected over USB.
 - Pylance is installed automatically as an extension dependency for Python analysis.
 - For source development, install Node.js/npm and Go.
@@ -205,7 +205,7 @@ npm run package:vsix
 - Preview is empty: make sure the running script publishes IDE framebuffer data.
 - Preview stops updating: disable and re-enable Preview, or stop and restart the script.
 - Remote file edits are not syncing: save the mirrored local file and check the `CanMV` Output channel for transfer errors.
-- Python completions are missing: confirm Pylance is installed, reload VS Code after stubs are configured, and check `python.analysis.stubPath`.
+- Python completions are missing: confirm Pylance is installed, reload Visual Studio Code after stubs are configured, and check `python.analysis.stubPath`.
 - File operations fail: refresh the Device tree and inspect the `CanMV` Output channel.
 
 ## Repository

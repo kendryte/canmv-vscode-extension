@@ -2,11 +2,12 @@
   "name": "canmv-vscode",
   "displayName": "CanMV",
   "description": "%extension.description%",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "kendryte747",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kendryte/canmv-vscode-extension.git"
+    "url": "https://github.com/kendryte/canmv-vscode-extension.git",
+    "directory": "extension"
   },
   "bugs": {
     "url": "https://github.com/kendryte/canmv-vscode-extension/issues"
