@@ -1,6 +1,8 @@
-# CanMV for VS Code
+# CanMV VS Code Extension
 
-CanMV for VS Code brings CanMV K230 board development into the editor. It connects to the board through the bundled native backend, runs MicroPython scripts, streams camera frames, manages files on the device, and provides an integrated board terminal.
+CanMV VS Code Extension brings CanMV K230 board development into the editor. It connects to the board through the bundled native backend, runs MicroPython scripts, streams camera frames, manages files on the device, and provides an integrated board terminal.
+
+![CanMV VS Code Extension demo](resources/demo.gif)
 
 ## Features
 

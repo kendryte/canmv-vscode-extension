@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+- Added localization support for extension commands, views, webviews, and user-facing messages, including Simplified Chinese strings.
+- Improved remote mirror directory management and Pylance configuration handling for device files and stubs.
+- Improved preview framebuffer recovery by tuning the stale-frame threshold.
+
 ## 0.2.0
 
 - Added legacy and v2 board protocol support.
