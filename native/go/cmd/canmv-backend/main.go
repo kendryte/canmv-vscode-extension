@@ -643,7 +643,7 @@ func (s *server) startPreviewLoop(fps int) {
 				}
 				continue
 			}
-			if noFrameCount > 0 {
+			if noFrameCount > 3 {
 				_, _ = os.Stderr.WriteString("[canmv-backend] preview framebuffer recovered after empty probes=" + strconv.Itoa(noFrameCount) + "\n")
 				noFrameCount = 0
 				noFrameFastRetries = 0

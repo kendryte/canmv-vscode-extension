@@ -800,11 +800,12 @@
         return;
       }
       const x = clamp(event.clientX - rect.left, 0, rect.width);
-      const bin = clamp(Math.round((x / rect.width) * (channel.bins.length - 1)), 0, channel.bins.length - 1);
-      const value = channel.displayValue(bin);
+      const bin = clamp(Math.floor((x / rect.width) * channel.bins.length), 0, channel.bins.length - 1);
+      const position = channel.displayValue(bin);
+      const count = channel.bins[bin];
       histogramHover = { index, bin };
       renderHistogramChannels(lastHistogramChannels);
-      showHistogramTooltip(event.clientX, event.clientY, `Value ${value}`);
+      showHistogramTooltip(event.clientX, event.clientY, `Count ${count} (${channel.label} ${position})`);
     }
 
     function showHistogramTooltip(clientX, clientY, text) {
