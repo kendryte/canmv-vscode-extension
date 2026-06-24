@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { BaseToolPanel } from './BaseToolPanel';
+import { t } from '../i18n';
 
 export type ThresholdMode = 'grayscale' | 'lab';
 
@@ -21,7 +22,7 @@ export class ThresholdEditorPanel extends BaseToolPanel {
   readonly onRequestPreviewFrame = this._onRequestPreviewFrame.event;
 
   constructor(context: vscode.ExtensionContext) {
-    super('canmvThresholdEditor', 'Threshold Editor', context, 'threshold.html');
+    super('canmvThresholdEditor', t('Threshold Editor'), context, 'threshold.html');
     this.panel.webview.onDidReceiveMessage((msg: any) => {
       if (!msg || typeof msg.type !== 'string') return;
       if (msg.type === 'ready') {
@@ -42,7 +43,7 @@ export class ThresholdEditorPanel extends BaseToolPanel {
     this.sendConfig();
   }
 
-  sendPreviewFrame(data: ArrayBuffer | Uint8Array, name = 'Preview Frame'): void {
+  sendPreviewFrame(data: ArrayBuffer | Uint8Array, name = t('Preview Frame')): void {
     this.postMessage({
       type: 'previewFrame',
       data,

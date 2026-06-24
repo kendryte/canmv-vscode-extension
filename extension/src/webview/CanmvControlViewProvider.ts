@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { states } from '../i18n';
 
 type ControlState = {
   connected: boolean;
@@ -11,7 +12,7 @@ export class CanmvControlViewProvider implements vscode.WebviewViewProvider {
   private state: ControlState = {
     connected: false,
     scriptRunning: false,
-    statusText: 'Disconnected',
+    statusText: states.disconnected(),
   };
 
   constructor(private context: vscode.ExtensionContext) {}
@@ -61,7 +62,7 @@ export class CanmvControlViewProvider implements vscode.WebviewViewProvider {
       "style-src 'unsafe-inline'",
     ].join('; ');
     return `<!doctype html>
-<html lang="en">
+<html lang="${escapeHtml(vscode.env.language || 'en')}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -133,9 +134,9 @@ export class CanmvControlViewProvider implements vscode.WebviewViewProvider {
       <span id="status-dot" class="dot"></span>
       <span class="status-main">
         <span id="status-title" class="status-title">CanMV</span>
-        <span id="status-text" class="status-subtitle">Disconnected</span>
+        <span id="status-text" class="status-subtitle">${escapeHtml(states.disconnected())}</span>
       </span>
-      <span id="status-badge" class="badge idle">Offline</span>
+      <span id="status-badge" class="badge idle">${escapeHtml(states.offline())}</span>
     </div>
   </div>
 
@@ -145,7 +146,16 @@ export class CanmvControlViewProvider implements vscode.WebviewViewProvider {
     const statusTitle = document.getElementById('status-title');
     const statusText = document.getElementById('status-text');
     const statusBadge = document.getElementById('status-badge');
-    let state = { connected: false, scriptRunning: false, statusText: 'Disconnected' };
+    const l10n = ${jsonForScript({
+      canmv: 'CanMV',
+      canmvBoard: states.canmvBoard(),
+      connected: states.connected(),
+      disconnected: states.disconnected(),
+      offline: states.offline(),
+      ready: states.ready(),
+      running: states.running(),
+    })};
+    let state = { connected: false, scriptRunning: false, statusText: l10n.disconnected };
 
     window.addEventListener('message', event => {
       const msg = event.data || {};
@@ -156,9 +166,9 @@ export class CanmvControlViewProvider implements vscode.WebviewViewProvider {
     });
 
     function renderState() {
-      statusTitle.textContent = state.connected ? 'CanMV Board' : 'CanMV';
-      statusText.textContent = state.statusText || (state.connected ? 'Connected' : 'Disconnected');
-      statusBadge.textContent = state.scriptRunning ? 'Running' : (state.connected ? 'Ready' : 'Offline');
+      statusTitle.textContent = state.connected ? l10n.canmvBoard : l10n.canmv;
+      statusText.textContent = state.statusText || (state.connected ? l10n.connected : l10n.disconnected);
+      statusBadge.textContent = state.scriptRunning ? l10n.running : (state.connected ? l10n.ready : l10n.offline);
       statusBadge.classList.toggle('idle', !state.connected || !state.scriptRunning);
       statusDot.classList.toggle('connected', !!state.connected);
     }
@@ -178,4 +188,21 @@ function getNonce(): string {
     value += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return value;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function jsonForScript(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
 }

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { t } from '../i18n';
 
 export type FileType = 'file' | 'directory' | 'message';
 
@@ -27,11 +28,11 @@ export class FileTreeItem extends vscode.TreeItem {
     );
     if (fileType === 'file') {
       this.description = formatFileSize(size);
-      this.tooltip = `${absPath}\n${size} ${size === 1 ? 'byte' : 'bytes'}`;
+      this.tooltip = `${absPath}\n${t('{size} {unit}', { size, unit: size === 1 ? t('byte') : t('bytes') })}`;
       this.contextValue = name.endsWith('.py') ? 'pythonFile' : 'file';
       this.command = {
         command: 'canmv.openRemoteFile',
-        title: 'Open Remote File',
+        title: t('Open Remote File'),
         arguments: [this],
       };
     } else {

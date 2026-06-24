@@ -3,6 +3,7 @@ import { Methods, createRequest } from '../protocol/methods';
 import { Request, Response, isResponse } from '../protocol/types';
 import { logBlock, logError, logInfo, logWarn } from '../output';
 import type { ProtocolError } from '../protocol/types';
+import { t } from '../i18n';
 
 interface ProtocolRequester {
   request(req: Request<string>): Promise<Response | ProtocolError>;
@@ -37,7 +38,7 @@ export class ScriptService {
       editor = this.lastPythonEditor;
     }
     if (!editor) {
-      vscode.window.showWarningMessage('CanMV: No Python file open. Open a .py file first.');
+      vscode.window.showWarningMessage(t('CanMV: No Python file open. Open a .py file first.'));
       return false;
     }
 
@@ -54,18 +55,18 @@ export class ScriptService {
         if (r.output) {
           logBlock('REPL', `Output from ${filename}`, r.output, 120);
         }
-        vscode.window.showInformationMessage(`CanMV: Script executed successfully (${filename}).`);
+        vscode.window.showInformationMessage(t('CanMV: Script executed successfully ({filename}).', { filename }));
         return true;
       } else {
         const message = r.message || r.output || 'unknown';
         logWarn('Script', `Run error: ${message}`);
-        vscode.window.showWarningMessage(`CanMV: Script error — ${message}`);
+        vscode.window.showWarningMessage(t('CanMV: Script error - {message}', { message }));
         return false;
       }
     } else {
       const err = result as ProtocolError;
       logError('Script', `Run failed: ${err.error.message}`);
-      vscode.window.showErrorMessage(`CanMV: ${err.error.message}`);
+      vscode.window.showErrorMessage(t('CanMV: {message}', { message: err.error.message }));
       return false;
     }
   }

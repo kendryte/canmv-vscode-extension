@@ -5,6 +5,7 @@ import { isResponse } from '../protocol/types';
 import { logBlock, logError, logInfo } from '../output';
 import { BoardDetector } from '../backend/detector';
 import type { ProtocolError } from '../protocol/types';
+import { t } from '../i18n';
 
 export interface BoardInfo {
   boardType: string;
@@ -47,7 +48,7 @@ export class BoardService {
       if (boards.length === 0) {
         await this.session.disconnect();
         vscode.window.showErrorMessage(
-          'CanMV: No CanMV device detected. Connect the board via USB or configure canmv.serialPath in settings.'
+          t('CanMV: No CanMV device detected. Connect the board via USB or configure canmv.serialPath in settings.')
         );
         return null;
       }
@@ -61,11 +62,11 @@ export class BoardService {
             description: b.name,
             detail: [
               'USB ' + b.vid + ':' + b.pid,
-              b.serialNumber ? 'Serial ' + b.serialNumber : undefined,
+              b.serialNumber ? t('Serial {serialNumber}', { serialNumber: b.serialNumber }) : undefined,
               b.description,
             ].filter(Boolean).join(' | '),
           })),
-          { placeHolder: 'Select CanMV device' }
+          { placeHolder: t('Select CanMV device') }
         );
         if (!selected) {
           await this.session.disconnect();
@@ -96,13 +97,13 @@ export class BoardService {
           logBlock('REPL', 'Boot output', redactFirmwareRevision(info.repl), 80);
         }
         vscode.window.showInformationMessage(
-          `CanMV: Connected — ${info.boardType} (FW ${info.fwVersion})`
+          t('CanMV: Connected - {boardType} (FW {firmwareVersion})', { boardType: info.boardType, firmwareVersion: info.fwVersion })
         );
         return info.repl || null;
       } else {
         const err = result as ProtocolError;
         logError('Board', `Connect failed: ${err.error.message}`);
-        vscode.window.showErrorMessage(`CanMV: ${err.error.message}`);
+        vscode.window.showErrorMessage(t('CanMV: {message}', { message: err.error.message }));
         if (backendOpenedForDetection) {
           await this.session.disconnect();
         }
@@ -110,7 +111,7 @@ export class BoardService {
       }
     } catch (err) {
       logError('Board', `Connect failed: ${err instanceof Error ? err.message : String(err)}`);
-      vscode.window.showErrorMessage(`CanMV: Failed to connect — ${err}`);
+      vscode.window.showErrorMessage(t('CanMV: Failed to connect - {message}', { message: String(err) }));
       if (backendOpenedForDetection) {
         await this.session.disconnect();
       }

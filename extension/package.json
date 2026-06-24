@@ -1,7 +1,7 @@
 {
   "name": "canmv-vscode",
   "displayName": "CanMV",
-  "description": "CanMV K230 development in VS Code: connect, run scripts, preview frames, manage files, and use the board terminal.",
+  "description": "%extension.description%",
   "version": "0.2.0",
   "publisher": "kendryte747",
   "repository": {
@@ -58,106 +58,107 @@
     "onView:canmv.terminalView"
   ],
   "main": "./out/extension.js",
+  "l10n": "./l10n",
   "contributes": {
     "commands": [
       {
         "command": "canmv.connectBoard",
-        "title": "CanMV: Connect Board",
+        "title": "%canmv.command.connectBoard%",
         "icon": "$(plug)"
       },
       {
         "command": "canmv.disconnectBoard",
-        "title": "CanMV: Disconnect Board",
+        "title": "%canmv.command.disconnectBoard%",
         "icon": "$(debug-disconnect)"
       },
       {
         "command": "canmv.runCurrentScript",
-        "title": "CanMV: Run Active Python Script",
+        "title": "%canmv.command.runCurrentScript%",
         "icon": "$(run)"
       },
       {
         "command": "canmv.stopScript",
-        "title": "CanMV: Stop Script",
+        "title": "%canmv.command.stopScript%",
         "icon": "$(debug-stop)"
       },
       {
         "command": "canmv.startPreview",
-        "title": "CanMV: Enable Preview",
+        "title": "%canmv.command.startPreview%",
         "icon": "$(device-camera)"
       },
       {
         "command": "canmv.stopPreview",
-        "title": "CanMV: Disable Preview",
+        "title": "%canmv.command.stopPreview%",
         "icon": "$(circle-slash)"
       },
       {
         "command": "canmv.runRemoteFile",
-        "title": "CanMV: Run Remote File",
+        "title": "%canmv.command.runRemoteFile%",
         "icon": "$(play)"
       },
       {
         "command": "canmv.openTool",
-        "title": "CanMV: Open Tool",
+        "title": "%canmv.command.openTool%",
         "icon": "$(tools)"
       },
       {
         "command": "canmv.openThresholdEditor",
-        "title": "CanMV: Threshold Editor",
+        "title": "%canmv.command.openThresholdEditor%",
         "icon": "$(settings)"
       },
       {
         "command": "canmv.refreshExplorer",
-        "title": "CanMV: Refresh Explorer",
+        "title": "%canmv.command.refreshExplorer%",
         "icon": "$(refresh)"
       },
       {
         "command": "canmv.runOnK230",
-        "title": "CanMV: Run Active File on K230",
+        "title": "%canmv.command.runOnK230%",
         "icon": "$(debug-start)"
       },
       {
         "command": "canmv.saveAsMainPy",
-        "title": "CanMV: Save as main.py",
+        "title": "%canmv.command.saveAsMainPy%",
         "icon": "$(save-as)"
       },
       {
         "command": "canmv.saveAsBootPy",
-        "title": "CanMV: Save as boot.py",
+        "title": "%canmv.command.saveAsBootPy%",
         "icon": "$(save-as)"
       },
       {
         "command": "canmv.newRemoteFile",
-        "title": "CanMV: New File",
+        "title": "%canmv.command.newRemoteFile%",
         "icon": "$(new-file)"
       },
       {
         "command": "canmv.newRemoteFolder",
-        "title": "CanMV: New Folder",
+        "title": "%canmv.command.newRemoteFolder%",
         "icon": "$(new-folder)"
       },
       {
         "command": "canmv.renameRemoteItem",
-        "title": "CanMV: Rename",
+        "title": "%canmv.command.renameRemoteItem%",
         "icon": "$(edit)"
       },
       {
         "command": "canmv.deleteRemoteItem",
-        "title": "CanMV: Delete",
+        "title": "%canmv.command.deleteRemoteItem%",
         "icon": "$(trash)"
       },
       {
         "command": "canmv.uploadFiles",
-        "title": "CanMV: Upload Files...",
+        "title": "%canmv.command.uploadFiles%",
         "icon": "$(cloud-upload)"
       },
       {
         "command": "canmv.uploadFolder",
-        "title": "CanMV: Upload Folder...",
+        "title": "%canmv.command.uploadFolder%",
         "icon": "$(folder-opened)"
       },
       {
         "command": "canmv.downloadRemoteItem",
-        "title": "CanMV: Download...",
+        "title": "%canmv.command.downloadRemoteItem%",
         "icon": "$(cloud-download)"
       }
     ],
@@ -166,24 +167,24 @@
         {
           "type": "webview",
           "id": "canmv.controls",
-          "name": "Controls",
+          "name": "%canmv.view.controls%",
           "icon": "$(remote)"
         },
         {
           "id": "canmv.toolbox",
-          "name": "Toolbox",
+          "name": "%canmv.view.toolbox%",
           "icon": "$(tools)"
         },
         {
           "id": "canmv.explorer",
-          "name": "Device",
+          "name": "%canmv.view.device%",
           "icon": "$(folder)"
         }
       ],
       "canmv-terminal": [
         {
           "id": "canmv.terminalView",
-          "name": "CanMV Terminal",
+          "name": "%canmv.view.terminal%",
           "type": "webview"
         }
       ]
@@ -199,7 +200,7 @@
       "panel": [
         {
           "id": "canmv-terminal",
-          "title": "CanMV Terminal",
+          "title": "%canmv.view.terminal%",
           "icon": "$(terminal)"
         }
       ]
@@ -341,41 +342,41 @@
     "submenus": [
       {
         "id": "canmv.editorMenu",
-        "label": "CanMV"
+        "label": "%canmv.submenu.editorMenu%"
       }
     ],
     "configuration": {
-      "title": "CanMV",
+      "title": "%canmv.configuration.title%",
       "properties": {
         "canmv.serialPath": {
           "type": "string",
           "default": "",
-          "description": "Serial device path. Leave empty to auto-detect CanMV devices by USB VID:PID 1209:abd1. Set manually to override: e.g., /dev/ttyACM0"
+          "description": "%canmv.configuration.serialPath.description%"
         },
         "canmv.baudRate": {
           "type": "number",
           "default": 12000000,
-          "description": "Serial baud rate (default: 12M for K230 USB CDC). Only used when serialPath is manually set."
+          "description": "%canmv.configuration.baudRate.description%"
         },
         "canmv.backendPath": {
           "type": "string",
           "default": "",
-          "description": "Path to a CanMV backend executable. Leave empty to use the backend bundled with the extension."
+          "description": "%canmv.configuration.backendPath.description%"
         },
         "canmv.autoReconnect": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically reconnect on unexpected disconnect"
+          "description": "%canmv.configuration.autoReconnect.description%"
         },
         "canmv.stubsAutoDownload": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically download K230 stubs for Pylance on board connect"
+          "description": "%canmv.configuration.stubsAutoDownload.description%"
         },
         "canmv.stubsBaseUrl": {
           "type": "string",
           "default": "https://kendryte-download.canaan-creative.com/developer/tools/canmv_ide_k230/canmv_k230_stubs",
-          "description": "Base URL for downloading K230 MicroPython stubs"
+          "description": "%canmv.configuration.stubsBaseUrl.description%"
         }
       }
     }

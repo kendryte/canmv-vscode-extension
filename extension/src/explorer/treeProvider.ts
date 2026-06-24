@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { FileTreeItem } from './fileItem';
+import { t } from '../i18n';
 
 export interface FileServiceCallbacks {
   listDir(path: string): Promise<{ name: string; type: 'file' | 'directory'; size: number }[]>;
@@ -37,10 +38,10 @@ export class CanmvExplorer implements vscode.TreeDataProvider<FileTreeItem> {
 
   async getChildren(element?: FileTreeItem): Promise<FileTreeItem[]> {
     if (!this.connected) {
-      return [new FileTreeItem('Not connected', 'file', '', 0)];
+      return [FileTreeItem.message(t('Not connected'))];
     }
     if (!this.fileExplorerSupported) {
-      return [FileTreeItem.message('File explorer is not supported by this firmware')];
+      return [FileTreeItem.message(t('File explorer is not supported by this firmware'))];
     }
 
     if (!element) {
@@ -48,7 +49,7 @@ export class CanmvExplorer implements vscode.TreeDataProvider<FileTreeItem> {
         const entries = sortEntries(await this.fileOps.listDir('/'));
         return entries.map(e => new FileTreeItem(e.name, e.type, e.name === '/' ? '/' : '/' + e.name, e.size));
       } catch {
-        return [FileTreeItem.message('Error loading /')];
+        return [FileTreeItem.message(t('Error loading /'))];
       }
     }
 
@@ -64,7 +65,7 @@ export class CanmvExplorer implements vscode.TreeDataProvider<FileTreeItem> {
           )
         );
       } catch {
-        return [FileTreeItem.message('Error loading folder')];
+        return [FileTreeItem.message(t('Error loading folder'))];
       }
     }
 

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { injectWebviewStrings } from '../i18n';
 
 export abstract class BaseToolPanel {
   protected panel: vscode.WebviewPanel;
@@ -19,7 +20,7 @@ export abstract class BaseToolPanel {
       { enableScripts: true, retainContextWhenHidden: true }
     );
     const htmlPath = path.join(context.extensionPath, 'webview', htmlFile);
-    this.panel.webview.html = fs.readFileSync(htmlPath, 'utf-8');
+    this.panel.webview.html = injectWebviewStrings(fs.readFileSync(htmlPath, 'utf-8'));
 
     // Track disposal — when user closes the tab, VS Code fires this.
     this.onDidDispose = this.panel.onDidDispose;

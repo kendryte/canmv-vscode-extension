@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { FileService, type FileEntry } from '../service/fileService';
+import { t } from '../i18n';
 
 const WRITABLE_ROOTS = new Set(['sdcard', 'data', 'udisk']);
 
@@ -68,7 +69,7 @@ export class CanmvFileSystemProvider implements vscode.FileSystemProvider {
 
     const ok = await this.fileService.writeFile(uri.path, content);
     if (!ok) {
-      throw vscode.FileSystemError.Unavailable('Write failed');
+      throw vscode.FileSystemError.Unavailable(t('Write failed'));
     }
     this.fireChanged(uri, exists ? vscode.FileChangeType.Changed : vscode.FileChangeType.Created);
   }
@@ -93,7 +94,7 @@ export class CanmvFileSystemProvider implements vscode.FileSystemProvider {
 
     const ok = await this.fileService.renameFile(oldUri.path, newUri.path);
     if (!ok) {
-      throw vscode.FileSystemError.Unavailable('Rename failed');
+      throw vscode.FileSystemError.Unavailable(t('Rename failed'));
     }
     this._emitter.fire([
       { type: vscode.FileChangeType.Deleted, uri: oldUri },
@@ -109,14 +110,14 @@ export class CanmvFileSystemProvider implements vscode.FileSystemProvider {
     if (stat.type === vscode.FileType.Directory && !options.recursive) {
       const entries = await this.readDirectory(uri);
       if (entries.length > 0) {
-        throw vscode.FileSystemError.NoPermissions('Directory is not empty');
+        throw vscode.FileSystemError.NoPermissions(t('Directory is not empty'));
       }
     }
     const ok = stat.type === vscode.FileType.Directory
       ? await this.fileService.rmdir(uri.path)
       : await this.fileService.deleteFile(uri.path);
     if (!ok) {
-      throw vscode.FileSystemError.Unavailable('Delete failed');
+      throw vscode.FileSystemError.Unavailable(t('Delete failed'));
     }
     this.fireChanged(uri, vscode.FileChangeType.Deleted);
   }
@@ -125,7 +126,7 @@ export class CanmvFileSystemProvider implements vscode.FileSystemProvider {
     this.assertWritablePath(uri);
     const ok = await this.fileService.mkdir(uri.path);
     if (!ok) {
-      throw vscode.FileSystemError.Unavailable('Create directory failed');
+      throw vscode.FileSystemError.Unavailable(t('Create directory failed'));
     }
     this.fireChanged(uri, vscode.FileChangeType.Created);
   }
@@ -136,7 +137,7 @@ export class CanmvFileSystemProvider implements vscode.FileSystemProvider {
 
   private assertWritablePath(uri: vscode.Uri): void {
     if (!this.isWritablePath(uri.path)) {
-      throw vscode.FileSystemError.NoPermissions('CanMV root folders are read-only');
+      throw vscode.FileSystemError.NoPermissions(t('CanMV root folders are read-only'));
     }
   }
 

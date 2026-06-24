@@ -4,6 +4,7 @@ import { Methods, createRequest } from '../protocol/methods';
 import { Request, Response, isResponse } from '../protocol/types';
 import type { ProtocolError } from '../protocol/types';
 import { logDebug, logError, logInfo, logWarn } from '../output';
+import { t } from '../i18n';
 
 export interface FileEntry {
   name: string;
@@ -82,11 +83,11 @@ export class FileService {
     const stat = await this.statFile(cacheKey);
     if (!stat.exists) {
       logWarn('Files', `Read failed: ${cacheKey}: file not found`);
-      throw new Error(`Remote file not found: ${cacheKey}`);
+      throw new Error(t('Remote file not found: {path}', { path: cacheKey }));
     }
     if (stat.type === 'directory') {
       logWarn('Files', `Read failed: ${cacheKey}: path is a folder`);
-      throw new Error(`Remote path is a folder: ${cacheKey}`);
+      throw new Error(t('Remote path is a folder: {path}', { path: cacheKey }));
     }
 
     const cached = this.readCache.get(cacheKey);
@@ -109,7 +110,7 @@ export class FileService {
       if (data.byteLength !== stat.size) {
         this.invalidateCache(cacheKey);
         logError('Files', `Read incomplete: ${cacheKey}: expected ${formatFileSize(stat.size)}, got ${formatFileSize(data.byteLength)}`);
-        throw new Error(`Read incomplete: expected ${stat.size} bytes, got ${data.byteLength}`);
+        throw new Error(t('Read incomplete: expected {expected} bytes, got {actual}', { expected: stat.size, actual: data.byteLength }));
       }
       this.readCache.set(cacheKey, {
         data: new Uint8Array(data),
@@ -257,11 +258,11 @@ export class FileService {
     }
     if (!stat.isFile()) {
       logWarn('Files', `Upload rejected: ${localPath}: not a file or folder`);
-      throw new Error('Only files and folders can be uploaded');
+      throw new Error(t('Only files and folders can be uploaded'));
     }
     const data = fs.readFileSync(localPath);
     const ok = await this.writeFile(remotePath, data, { logSuccess: false });
-    if (!ok) throw new Error(`Failed to upload ${path.basename(localPath)}`);
+    if (!ok) throw new Error(t('Failed to upload {name}', { name: path.basename(localPath) }));
     logInfo('Files', `Upload file finished: ${localPath} -> ${remotePath} (${formatFileSize(data.byteLength)}, ${Date.now() - startedAt}ms)`);
   }
 
@@ -270,9 +271,9 @@ export class FileService {
     if (!made) {
       try {
         const entries = await this.listDir(remoteDir);
-        if (!Array.isArray(entries)) throw new Error('not a directory');
+        if (!Array.isArray(entries)) throw new Error(t('not a directory'));
       } catch {
-        throw new Error(`Failed to create remote folder ${remoteDir}`);
+        throw new Error(t('Failed to create remote folder {path}', { path: remoteDir }));
       }
     }
     stats.folders++;
@@ -286,7 +287,7 @@ export class FileService {
       } else if (entry.isFile()) {
         const data = fs.readFileSync(localChild);
         const ok = await this.writeFile(remoteChild, data, { logSuccess: false });
-        if (!ok) throw new Error(`Failed to upload ${localChild}`);
+        if (!ok) throw new Error(t('Failed to upload {path}', { path: localChild }));
         stats.files++;
         stats.bytes += data.byteLength;
       }
@@ -299,7 +300,7 @@ export class FileService {
     const stat = await this.statFile(remotePath);
     if (!stat.exists) {
       logWarn('Files', `Download failed: ${remotePath}: remote path not found`);
-      throw new Error(`Remote path not found: ${remotePath}`);
+      throw new Error(t('Remote path not found: {path}', { path: remotePath }));
     }
 
     if (stat.type === 'directory') {
@@ -316,7 +317,7 @@ export class FileService {
   private async downloadDirectory(remoteDir: string, localDir: string, stats: TransferStats): Promise<void> {
     if (fs.existsSync(localDir) && !fs.statSync(localDir).isDirectory()) {
       logWarn('Files', `Download failed: local path is not a folder: ${localDir}`);
-      throw new Error(`Local path exists and is not a folder: ${localDir}`);
+      throw new Error(t('Local path exists and is not a folder: {path}', { path: localDir }));
     }
     fs.mkdirSync(localDir, { recursive: true });
     stats.folders++;

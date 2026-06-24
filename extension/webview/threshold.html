@@ -288,6 +288,8 @@
 
   <script>
     const vscode = acquireVsCodeApi();
+    const l10n = window.__CANMV_L10N__ || {};
+    const text = (key, fallback) => l10n[key] || fallback;
     const fileInput = document.getElementById('file-input');
     const previewBtn = document.getElementById('preview-btn');
     const resetBtn = document.getElementById('reset-btn');
@@ -327,13 +329,13 @@
         applyConfig(msg.config || {});
       } else if (msg.type === 'previewFrame') {
         const frameData = normalizeFrameData(msg.data, msg.byteLength);
-        if (frameData) loadImageBlob(new Blob([frameData], { type: imageMimeFromBytes(frameData) }), msg.name || 'Preview Frame');
+        if (frameData) loadImageBlob(new Blob([frameData], { type: imageMimeFromBytes(frameData) }), msg.name || text('previewFrame', 'Preview Frame'));
       } else if (msg.type === 'frameUnavailable') {
-        setStatus(msg.message || 'No preview frame available');
+        setStatus(msg.message || text('noPreviewFrameAvailable', 'No preview frame available'));
       } else if (msg.type === 'copied') {
-        toast('Copied threshold');
+        toast(text('copiedThreshold', 'Copied threshold'));
       } else if (msg.type === 'applied') {
-        toast('Updated selected tuple');
+        toast(text('updatedSelectedTuple', 'Updated selected tuple'));
       }
     });
 
@@ -450,7 +452,7 @@
       const lab = modeSelect.value === 'lab';
       graySliders.hidden = lab;
       labSliders.hidden = !lab;
-      thresholdLabel.textContent = lab ? 'LAB Threshold' : 'Grayscale Threshold';
+      thresholdLabel.textContent = lab ? text('labThreshold', 'LAB Threshold') : text('grayscaleThreshold', 'Grayscale Threshold');
       updateThresholdText();
     }
 
@@ -475,12 +477,12 @@
         sourceCtx.drawImage(bitmap, 0, 0);
         bitmap.close();
         sourceImageData = sourceCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
-        sourceName = name || 'Image';
+        sourceName = name || text('image', 'Image');
         setStatus(`${sourceName} - ${sourceCanvas.width}x${sourceCanvas.height}`);
         scheduleRender(true);
       } catch (error) {
         console.error(error);
-        setStatus('Unable to load image');
+        setStatus(text('unableToLoadImage', 'Unable to load image'));
       }
     }
 
@@ -491,7 +493,7 @@
       binaryCanvas.height = imageData.height;
       sourceCtx.putImageData(imageData, 0, 0);
       sourceImageData = sourceCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
-      sourceName = name || 'Image';
+      sourceName = name || text('image', 'Image');
       setStatus(`${sourceName} - ${sourceCanvas.width}x${sourceCanvas.height}`);
       scheduleRender(true);
     }
@@ -522,7 +524,7 @@
       const height = Number(readToken());
       const maxValue = Number(readToken());
       if ((magic !== 'P6' && magic !== 'P3') || !width || !height || !maxValue) {
-        throw new Error('Invalid PPM image');
+        throw new Error(text('invalidPpmImage', 'Invalid PPM image'));
       }
       const rgba = new Uint8ClampedArray(width * height * 4);
       if (magic === 'P3') {
@@ -689,7 +691,7 @@
       if (lastToastTimer) clearTimeout(lastToastTimer);
       lastToastTimer = setTimeout(() => {
         lastToastTimer = 0;
-        setStatus(sourceImageData ? `${sourceName} - ${sourceCanvas.width}x${sourceCanvas.height}` : 'No image loaded');
+        setStatus(sourceImageData ? `${sourceName} - ${sourceCanvas.width}x${sourceCanvas.height}` : text('noImageLoaded', 'No image loaded'));
       }, 1400);
     }
 
@@ -702,6 +704,48 @@
       return Math.min(max, Math.max(min, value));
     }
 
+    function applyLocalization() {
+      document.documentElement.lang = navigator.language || 'en';
+      document.title = text('thresholdEditorTitle', 'Threshold Editor');
+      const fileButton = document.querySelector('.file-button');
+      fileButton.title = text('openImageFile', 'Open Image File');
+      fileButton.childNodes[0].nodeValue = text('open', 'Open') + '\n      ';
+      previewBtn.textContent = text('frameBuffer', 'Frame Buffer');
+      previewBtn.title = text('loadLatestPreviewFrame', 'Load latest Preview frame');
+      resetBtn.textContent = text('reset', 'Reset');
+      resetBtn.title = text('resetSliders', 'Reset sliders');
+      statusEl.textContent = text('noImageLoaded', 'No image loaded');
+      statusEl.title = text('noImageLoaded', 'No image loaded');
+      const titles = document.querySelectorAll('.viewer-title');
+      if (titles[0]) titles[0].textContent = text('sourceImage', 'Source Image');
+      if (titles[1]) titles[1].textContent = text('binaryImage', 'Binary Image (white pixels are tracked pixels)');
+      modeSelect.title = text('thresholdColorSpace', 'Threshold color space');
+      modeSelect.setAttribute('aria-label', text('thresholdColorSpace', 'Threshold color space'));
+      modeSelect.options[0].textContent = text('grayscale', 'Grayscale');
+      modeSelect.options[1].textContent = text('lab', 'LAB');
+      document.querySelector('.check').lastChild.nodeValue = ' ' + text('invert', 'Invert');
+      const labels = {
+        'g-min': text('grayscaleMin', 'Grayscale Min'),
+        'g-max': text('grayscaleMax', 'Grayscale Max'),
+        'l-min': text('lMin', 'L Min'),
+        'l-max': text('lMax', 'L Max'),
+        'a-min': text('aMin', 'A Min'),
+        'a-max': text('aMax', 'A Max'),
+        'b-min': text('bMin', 'B Min'),
+        'b-max': text('bMax', 'B Max')
+      };
+      for (const [id, label] of Object.entries(labels)) {
+        const el = document.querySelector(`label[for="${id}"]`);
+        if (el) el.textContent = label;
+      }
+      copyBtn.textContent = text('copy', 'Copy');
+      copyBtn.title = text('copyThresholdTuple', 'Copy threshold tuple');
+      applyBtn.textContent = text('apply', 'Apply');
+      applyBtn.title = text('replaceSelectedThresholdTuple', 'Replace selected threshold tuple');
+      document.getElementById('drop-hint').textContent = text('dropImageFile', 'Drop an image file to load it');
+    }
+
+    applyLocalization();
     updateModeUi();
     applyBtn.disabled = true;
     vscode.postMessage({ type: 'ready' });

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { BaseToolPanel } from './BaseToolPanel';
+import { t } from '../i18n';
 
 export class PreviewPanel extends BaseToolPanel {
   private _onProfile = new vscode.EventEmitter<any>();
@@ -13,7 +14,7 @@ export class PreviewPanel extends BaseToolPanel {
   readonly onVirtualTouch = this._onVirtualTouch.event;
 
   constructor(context: vscode.ExtensionContext) {
-    super('canmvPreview', 'CanMV Preview', context, 'index.html');
+    super('canmvPreview', t('CanMV Preview'), context, 'index.html');
     this.panel.webview.onDidReceiveMessage((msg: any) => {
       if (msg.type === 'profile') {
         this._onProfile.fire(msg);

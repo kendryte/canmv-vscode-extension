@@ -21,6 +21,7 @@ import { ThresholdEditorPanel, type ThresholdEditorConfig, type ThresholdMode } 
 import { Methods, createRequest } from './protocol/methods';
 import { isResponse } from './protocol/types';
 import { logDebug, logError, logInfo, logWarn } from './output';
+import { t, states } from './i18n';
 
 let disposables: vscode.Disposable[] = [];
 let previewPanel: PreviewPanel | undefined;
@@ -45,7 +46,7 @@ type ThresholdSelection = {
 
 const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
 statusItem.text = '$(debug-disconnect) CanMV';
-statusItem.tooltip = 'Disconnected';
+statusItem.tooltip = states.disconnected();
 
 export function activate(context: vscode.ExtensionContext) {
   logActivationInfo(context);
@@ -78,13 +79,13 @@ export function activate(context: vscode.ExtensionContext) {
     return [board, info.fwVersion, info.memorySize].filter(Boolean).join(' ') || 'CanMV';
   };
   const sidebarStatusText = (state: string) => {
-    if (state === 'connecting') return 'Connecting...';
-    if (state === 'streaming') return 'Streaming';
+    if (state === 'connecting') return states.connecting();
+    if (state === 'streaming') return states.streaming();
     if (state === 'connected') {
       const info = boardService.boardInfo();
-      return info ? boardStatusLabel(info) : 'Connected';
+      return info ? boardStatusLabel(info) : states.connected();
     }
-    return 'Disconnected';
+    return states.disconnected();
   };
   const setConnectionContexts = (state: string) => {
     connected = state === 'connected' || state === 'streaming';
@@ -108,12 +109,12 @@ export function activate(context: vscode.ExtensionContext) {
   const boardStatusTooltip = (info: BoardInfo) => {
     const board = info.boardName || info.boardType;
     const lines = [
-      'CanMV board connected',
-      `Board: ${board}`,
-      `Firmware: ${info.fwVersion}`,
+      t('CanMV board connected'),
+      t('Board: {board}', { board }),
+      t('Firmware: {firmwareVersion}', { firmwareVersion: info.fwVersion }),
     ];
-    if (info.memorySize) lines.push(`Memory: ${info.memorySize}`);
-    if (info.port) lines.push(`Port: ${info.port}`);
+    if (info.memorySize) lines.push(t('Memory: {memory}', { memory: info.memorySize }));
+    if (info.port) lines.push(t('Port: {port}', { port: info.port }));
     return lines.join('\n');
   };
   const updateBoardStatus = () => {
@@ -125,7 +126,7 @@ export function activate(context: vscode.ExtensionContext) {
       return;
     }
     statusItem.text = '$(debug-start) CanMV';
-    statusItem.tooltip = 'Connected';
+    statusItem.tooltip = states.connected();
   };
   const boardSupportsReplInput = () => {
     return boardService.boardInfo()?.capabilities?.replInput === true;
@@ -143,11 +144,11 @@ export function activate(context: vscode.ExtensionContext) {
     const replInputSupported = boardSupportsReplInput();
     const canInput = connected && replInputSupported && !scriptRunning;
     const reason = disconnected
-      ? 'Connect board to use REPL input'
+      ? t('Connect board to use REPL input')
       : !replInputSupported
-        ? 'REPL input is not supported by this firmware'
+        ? t('REPL input is not supported by this firmware')
         : scriptRunning
-          ? 'Script is running; press Ctrl-C to stop it'
+          ? t('Script is running; press Ctrl-C to stop it')
           : '';
     terminalViewProvider?.setInputEnabled(canInput, reason, connected && scriptRunning);
   };
@@ -311,7 +312,7 @@ export function activate(context: vscode.ExtensionContext) {
   // ToolHost + ToolRegistry
   const registry = new ToolRegistry();
   registry.register({
-    id: 'preview', name: 'Preview', icon: 'device-camera',
+    id: 'preview', name: t('Preview'), icon: 'device-camera',
     factory: () => {
       // If we're recreating the panel after it was disposed, clean up old references
       if (previewPanel?.disposed) {
@@ -357,8 +358,8 @@ export function activate(context: vscode.ExtensionContext) {
         const defaultUri = base ? vscode.Uri.joinPath(base, `canmv-frame-${stamp}.png`) : undefined;
         const target = await vscode.window.showSaveDialog({
           defaultUri,
-          filters: { 'PNG Image': ['png'] },
-          saveLabel: 'Save Image',
+          filters: { [t('PNG Image')]: ['png'] },
+          saveLabel: t('Save Image'),
         });
         if (!target) return;
         await vscode.workspace.fs.writeFile(target, data);
@@ -388,7 +389,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
   });
   registry.register({
-    id: 'thresholdEditor', name: 'Threshold Editor', icon: 'settings',
+    id: 'thresholdEditor', name: t('Threshold Editor'), icon: 'settings',
     factory: () => {
       if (thresholdEditorPanel?.disposed) {
         thresholdEditorPanel = undefined;
@@ -404,7 +405,7 @@ export function activate(context: vscode.ExtensionContext) {
       });
       thresholdEditorPanel.onApplyThreshold((text) => {
         void applyThresholdToSelection(text).catch((err) => {
-          vscode.window.showErrorMessage(`CanMV: Failed to update threshold - ${err instanceof Error ? err.message : String(err)}`);
+          vscode.window.showErrorMessage(t('CanMV: Failed to update threshold - {message}', { message: err instanceof Error ? err.message : String(err) }));
         });
       });
       thresholdEditorPanel.onRequestPreviewFrame(() => {
@@ -414,14 +415,14 @@ export function activate(context: vscode.ExtensionContext) {
           return;
         }
         if (!previewPanel) {
-          thresholdEditorPanel?.sendFrameUnavailable('No frame buffer image available. Start Preview, wait for a frame, or open an image file.');
+          thresholdEditorPanel?.sendFrameUnavailable(t('No frame buffer image available. Start Preview, wait for a frame, or open an image file.'));
           return;
         }
         void previewPanel.captureImage().then((data) => {
           if (data) {
-            thresholdEditorPanel?.sendPreviewFrame(data, 'Preview Canvas');
+            thresholdEditorPanel?.sendPreviewFrame(data, t('Preview Canvas'));
           } else {
-            thresholdEditorPanel?.sendFrameUnavailable('No frame buffer image available. Start Preview, wait for a frame, or open an image file.');
+            thresholdEditorPanel?.sendFrameUnavailable(t('No frame buffer image available. Start Preview, wait for a frame, or open an image file.'));
           }
         });
       });
@@ -645,11 +646,11 @@ export function activate(context: vscode.ExtensionContext) {
       if (payload.output) {
         appendTerminal(payload.output);
       }
-      vscode.window.showInformationMessage('CanMV: Script stopped.');
+      vscode.window.showInformationMessage(t('CanMV: Script stopped.'));
     } else {
       logError('Script', `Stop failed: ${result.error.message}`);
       appendTerminalLine(`[CanMV] ${result.error.message}`);
-      vscode.window.showErrorMessage(`CanMV: Failed to stop script - ${result.error.message}`);
+      vscode.window.showErrorMessage(t('CanMV: Failed to stop script - {message}', { message: result.error.message }));
     }
     setScriptRunningContext(false);
     if (options.stopPreview) {
@@ -660,9 +661,10 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   const showScriptAlreadyRunning = () => {
-    void vscode.window.showWarningMessage('CanMV: A script is already running. Stop it before running another script.', 'Stop Script')
+    const stopScript = t('Stop Script');
+    void vscode.window.showWarningMessage(t('CanMV: A script is already running. Stop it before running another script.'), stopScript)
       .then((selection) => {
-        if (selection === 'Stop Script') {
+        if (selection === stopScript) {
           void vscode.commands.executeCommand('canmv.stopScript');
         }
       });
@@ -681,7 +683,7 @@ export function activate(context: vscode.ExtensionContext) {
     const runningResult = await session.request(createRequest(Methods.scriptRunning, {}));
     if (!isResponse(runningResult)) {
       logWarn('Script', `Could not check running state: ${runningResult.error.message}`);
-      vscode.window.showWarningMessage(`CanMV: Cannot check script state — ${runningResult.error.message}`);
+      vscode.window.showWarningMessage(t('CanMV: Cannot check script state - {message}', { message: runningResult.error.message }));
       return false;
     }
     const running = !!(runningResult.result as { running?: boolean }).running;
@@ -703,7 +705,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (result.status !== 'started') {
         setScriptRunningContext(false);
         if (result.message) {
-          vscode.window.showWarningMessage(`CanMV: ${result.message}`);
+          vscode.window.showWarningMessage(t('CanMV: {message}', { message: result.message }));
         }
         return false;
       }
@@ -742,7 +744,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   const showRemoteOperationError = (operation: string, err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
-    void vscode.window.showErrorMessage(`CanMV: ${operation} failed - ${message}`);
+    void vscode.window.showErrorMessage(t('CanMV: {operation} failed - {message}', { operation, message }));
   };
 
   let thresholdSelection: ThresholdSelection | undefined;
@@ -784,7 +786,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   const applyThresholdToSelection = async (text: string) => {
     if (!thresholdSelection) {
-      vscode.window.showWarningMessage('CanMV: Select a grayscale or LAB threshold tuple before applying.');
+      vscode.window.showWarningMessage(t('CanMV: Select a grayscale or LAB threshold tuple before applying.'));
       return;
     }
     const document = await vscode.workspace.openTextDocument(thresholdSelection.uri);
@@ -805,8 +807,8 @@ export function activate(context: vscode.ExtensionContext) {
     value,
     validateInput: (input) => {
       const name = input.trim();
-      if (!name) return 'Name is required';
-      if (name.includes('/')) return 'Use a name, not a path';
+      if (!name) return t('Name is required');
+      if (name.includes('/')) return t('Use a name, not a path');
       return undefined;
     },
   });
@@ -944,9 +946,9 @@ export function activate(context: vscode.ExtensionContext) {
       fileService.clearCache();
       await boardService.disconnectBoard();
       statusItem.text = '$(debug-disconnect) CanMV';
-      statusItem.tooltip = 'Disconnected';
+      statusItem.tooltip = states.disconnected();
       updateTerminalInputState();
-      appendTerminalLine('[CanMV] Disconnected');
+      appendTerminalLine(t('[CanMV] Disconnected'));
     }),
     vscode.commands.registerCommand('canmv.runCurrentScript', async () => {
       if (!(await ensureCanStartScript())) return;
@@ -1009,11 +1011,11 @@ export function activate(context: vscode.ExtensionContext) {
         const result = await session.request(req);
         if (!isResponse(result)) {
           setScriptRunningContext(false);
-          vscode.window.showErrorMessage(`CanMV: ${result.error.message}`);
+          vscode.window.showErrorMessage(t('CanMV: {message}', { message: result.error.message }));
         } else if ((result.result as { status?: string }).status !== 'ok') {
           const payload = result.result as { message?: string; output?: string };
           setScriptRunningContext(false);
-          vscode.window.showWarningMessage(`CanMV: ${payload.message || payload.output || 'Script did not start'}`);
+          vscode.window.showWarningMessage(t('CanMV: {message}', { message: payload.message || payload.output || t('Script did not start') }));
         } else {
           startPreviewForScript();
           showScriptViews();
@@ -1028,12 +1030,12 @@ export function activate(context: vscode.ExtensionContext) {
       try {
         const ok = await fileService.writeFile('/sdcard/main.py', data);
         if (!ok) {
-          vscode.window.showWarningMessage('CanMV: Save as /sdcard/main.py was rejected by the board');
+          vscode.window.showWarningMessage(t('CanMV: Save as /sdcard/main.py was rejected by the board'));
           return;
         }
-        vscode.window.showInformationMessage('CanMV: Saved as /sdcard/main.py');
+        vscode.window.showInformationMessage(t('CanMV: Saved as /sdcard/main.py'));
       } catch (err) {
-        showRemoteOperationError('Save as /sdcard/main.py', err);
+        showRemoteOperationError(t('Save as /sdcard/main.py'), err);
       }
     }),
     vscode.commands.registerCommand('canmv.saveAsBootPy', async () => {
@@ -1044,12 +1046,12 @@ export function activate(context: vscode.ExtensionContext) {
       try {
         const ok = await fileService.writeFile('/boot.py', data);
         if (!ok) {
-          vscode.window.showWarningMessage('CanMV: Save as /boot.py was rejected by the board');
+          vscode.window.showWarningMessage(t('CanMV: Save as /boot.py was rejected by the board'));
           return;
         }
-        vscode.window.showInformationMessage('CanMV: Saved as /boot.py');
+        vscode.window.showInformationMessage(t('CanMV: Saved as /boot.py'));
       } catch (err) {
-        showRemoteOperationError('Save as /boot.py', err);
+        showRemoteOperationError(t('Save as /boot.py'), err);
       }
     }),
     vscode.commands.registerCommand('canmv.openTool', (toolId?: string) => {
@@ -1068,30 +1070,30 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canmv.newRemoteFile', async (item?: FileTreeItem) => {
       item = item ?? selectedExplorerItem();
       if (!connected || !item || item.fileType !== 'directory') return;
-      const name = await promptRemoteName('New file name');
+      const name = await promptRemoteName(t('New file name'));
       if (!name) return;
       const path = childPath(item.absPath, name.trim());
       try {
         const ok = await fileService.writeFile(path, new Uint8Array());
-        if (!ok) throw new Error('backend rejected the request');
+        if (!ok) throw new Error(t('backend rejected the request'));
         explorer.refresh();
         await remoteMirrorService.openRemoteFile(path);
       } catch (err) {
-        showRemoteOperationError('Create file', err);
+        showRemoteOperationError(t('Create file'), err);
       }
     }),
     vscode.commands.registerCommand('canmv.newRemoteFolder', async (item?: FileTreeItem) => {
       item = item ?? selectedExplorerItem();
       if (!connected || !item || item.fileType !== 'directory') return;
-      const name = await promptRemoteName('New folder name');
+      const name = await promptRemoteName(t('New folder name'));
       if (!name) return;
       const path = childPath(item.absPath, name.trim());
       try {
         const ok = await fileService.mkdir(path);
-        if (!ok) throw new Error('backend rejected the request');
+        if (!ok) throw new Error(t('backend rejected the request'));
         explorer.refresh();
       } catch (err) {
-        showRemoteOperationError('Create folder', err);
+        showRemoteOperationError(t('Create folder'), err);
       }
     }),
     vscode.commands.registerCommand('canmv.uploadFiles', async (item?: FileTreeItem) => {
@@ -1101,12 +1103,12 @@ export function activate(context: vscode.ExtensionContext) {
         canSelectFiles: true,
         canSelectFolders: false,
         canSelectMany: true,
-        openLabel: 'Upload Files',
+        openLabel: t('Upload Files'),
       });
       if (!files || files.length === 0) return;
       try {
         await vscode.window.withProgress(
-          { location: vscode.ProgressLocation.Notification, title: 'Uploading files to CanMV' },
+          { location: vscode.ProgressLocation.Notification, title: t('Uploading files to CanMV') },
           async (progress) => {
             for (let index = 0; index < files.length; index++) {
               const file = files[index];
@@ -1117,7 +1119,7 @@ export function activate(context: vscode.ExtensionContext) {
         );
         explorer.refresh();
       } catch (err) {
-        showRemoteOperationError('Upload files', err);
+        showRemoteOperationError(t('Upload files'), err);
       }
     }),
     vscode.commands.registerCommand('canmv.uploadFolder', async (item?: FileTreeItem) => {
@@ -1127,14 +1129,14 @@ export function activate(context: vscode.ExtensionContext) {
         canSelectFiles: false,
         canSelectFolders: true,
         canSelectMany: false,
-        openLabel: 'Upload Folder',
+        openLabel: t('Upload Folder'),
       });
       if (!folders || folders.length === 0) return;
       const folder = folders[0];
       const remotePath = childPath(item.absPath, path.basename(folder.fsPath));
       try {
         await vscode.window.withProgress(
-          { location: vscode.ProgressLocation.Notification, title: 'Uploading folder to CanMV' },
+          { location: vscode.ProgressLocation.Notification, title: t('Uploading folder to CanMV') },
           async (progress) => {
             progress.report({ message: path.basename(folder.fsPath) });
             await fileService.upload(folder.fsPath, remotePath);
@@ -1142,7 +1144,7 @@ export function activate(context: vscode.ExtensionContext) {
         );
         explorer.refresh();
       } catch (err) {
-        showRemoteOperationError('Upload folder', err);
+        showRemoteOperationError(t('Upload folder'), err);
       }
     }),
     vscode.commands.registerCommand('canmv.downloadRemoteItem', async (item?: FileTreeItem) => {
@@ -1152,8 +1154,8 @@ export function activate(context: vscode.ExtensionContext) {
         canSelectFiles: false,
         canSelectFolders: true,
         canSelectMany: false,
-        openLabel: 'Download Here',
-        title: 'Select Download Folder',
+        openLabel: t('Download Here'),
+        title: t('Select Download Folder'),
       });
       if (!folders || folders.length === 0) return;
 
@@ -1168,62 +1170,63 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       if (targetExists) {
-        const action = item.fileType === 'directory' ? 'Merge and Overwrite' : 'Overwrite';
+        const action = item.fileType === 'directory' ? t('Merge and Overwrite') : t('Overwrite');
         const confirmed = await vscode.window.showWarningMessage(
-          `"${path.basename(localPath)}" already exists in the selected folder.`,
-          { modal: true, detail: item.fileType === 'directory' ? 'Existing files with matching names may be overwritten.' : 'The existing local file will be overwritten.' },
+          t('"{name}" already exists in the selected folder.', { name: path.basename(localPath) }),
+          { modal: true, detail: item.fileType === 'directory' ? t('Existing files with matching names may be overwritten.') : t('The existing local file will be overwritten.') },
           action
         );
         if (confirmed !== action) return;
       }
 
-      const label = item.fileType === 'directory' ? 'folder' : 'file';
+      const label = item.fileType === 'directory' ? t('folder') : t('file');
       try {
         await vscode.window.withProgress(
-          { location: vscode.ProgressLocation.Notification, title: `Downloading ${label} from CanMV` },
+          { location: vscode.ProgressLocation.Notification, title: t('Downloading {label} from CanMV', { label }) },
           async (progress) => {
             progress.report({ message: item.absPath });
             await fileService.download(item.absPath, localPath);
           }
         );
-        void vscode.window.showInformationMessage(`CanMV: Downloaded ${item.name} to ${localPath}`);
+        void vscode.window.showInformationMessage(t('CanMV: Downloaded {name} to {path}', { name: item.name, path: localPath }));
       } catch (err) {
-        showRemoteOperationError('Download', err);
+        showRemoteOperationError(t('Download'), err);
       }
     }),
     vscode.commands.registerCommand('canmv.renameRemoteItem', async (item?: FileTreeItem) => {
       item = item ?? selectedExplorerItem();
       if (!connected || !item || item.contextValue === 'mountRoot') return;
-      const name = await promptRemoteName('New name', item.name || '');
+      const name = await promptRemoteName(t('New name'), item.name || '');
       if (!name || name.trim() === item.name) return;
       const parent = parentRemotePath(item.absPath);
       const newPath = childPath(parent, name.trim());
       try {
         const ok = await fileService.renameFile(item.absPath, newPath);
-        if (!ok) throw new Error('backend rejected the request');
+        if (!ok) throw new Error(t('backend rejected the request'));
         explorer.refresh();
       } catch (err) {
-        showRemoteOperationError('Rename', err);
+        showRemoteOperationError(t('Rename'), err);
       }
     }),
     vscode.commands.registerCommand('canmv.deleteRemoteItem', async (item?: FileTreeItem) => {
       item = item ?? selectedExplorerItem();
       if (!connected || !item || item.contextValue === 'mountRoot') return;
-      const label = item.fileType === 'directory' ? 'folder' : 'file';
+      const label = item.fileType === 'directory' ? t('folder') : t('file');
+      const deleteAction = t('Delete');
       const confirmed = await vscode.window.showWarningMessage(
-        `Delete ${label} "${item.name}" from CanMV?`,
+        t('Delete {label} "{name}" from CanMV?', { label, name: item.name }),
         { modal: true },
-        'Delete'
+        deleteAction
       );
-      if (confirmed !== 'Delete') return;
+      if (confirmed !== deleteAction) return;
       try {
         const ok = item.fileType === 'directory'
           ? await fileService.rmdir(item.absPath)
           : await fileService.deleteFile(item.absPath);
-        if (!ok) throw new Error('backend rejected the request');
+        if (!ok) throw new Error(t('backend rejected the request'));
         explorer.refresh();
       } catch (err) {
-        showRemoteOperationError('Delete', err);
+        showRemoteOperationError(t('Delete'), err);
       }
     }),
     vscode.commands.registerCommand('canmv.refreshExplorer', () => {
@@ -1233,7 +1236,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(...disposables);
   context.subscriptions.push(vscode.workspace.onDidSaveTextDocument((document) => {
     void remoteMirrorService.syncDocumentToRemote(document).catch((err) => {
-      showRemoteOperationError('Sync remote file', err);
+      showRemoteOperationError(t('Sync remote file'), err);
     });
   }));
 
@@ -1311,7 +1314,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
     } else {
       statusItem.text = '$(debug-disconnect) CanMV';
-      statusItem.tooltip = 'Disconnected';
+      statusItem.tooltip = states.disconnected();
     }
   });
 

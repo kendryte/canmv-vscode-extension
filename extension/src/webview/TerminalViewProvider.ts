@@ -1,11 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { injectWebviewStrings, t } from '../i18n';
 
 export class TerminalViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
   private inputEnabled = false;
-  private inputReason = 'Connect board to use REPL input';
+  private inputReason = t('Connect board to use REPL input');
   private interruptEnabled = false;
   private _onClear = new vscode.EventEmitter<void>();
   private _onInput = new vscode.EventEmitter<string>();
@@ -21,7 +22,7 @@ export class TerminalViewProvider implements vscode.WebviewViewProvider {
     this.view = webviewView;
     webviewView.webview.options = { enableScripts: true };
     const htmlPath = path.join(this.context.extensionPath, 'webview', 'terminal.html');
-    webviewView.webview.html = fs.readFileSync(htmlPath, 'utf-8');
+    webviewView.webview.html = injectWebviewStrings(fs.readFileSync(htmlPath, 'utf-8'));
     webviewView.webview.onDidReceiveMessage((msg: any) => {
       if (msg.type === 'clearTerminal') {
         this._onClear.fire();
@@ -61,7 +62,7 @@ export class TerminalViewProvider implements vscode.WebviewViewProvider {
   private async saveLog(): Promise<void> {
     const text = this.scrollback();
     if (!text) {
-      void vscode.window.showInformationMessage('CanMV: Terminal log is empty.');
+      void vscode.window.showInformationMessage(t('CanMV: Terminal log is empty.'));
       return;
     }
 
@@ -70,13 +71,13 @@ export class TerminalViewProvider implements vscode.WebviewViewProvider {
     const defaultUri = base ? vscode.Uri.joinPath(base, `canmv-terminal-${stamp}.log`) : undefined;
     const target = await vscode.window.showSaveDialog({
       defaultUri,
-      filters: { 'Log File': ['log'], 'Text File': ['txt'], 'All Files': ['*'] },
-      saveLabel: 'Save Log',
+      filters: { [t('Log File')]: ['log'], [t('Text File')]: ['txt'], [t('All Files')]: ['*'] },
+      saveLabel: t('Save Log'),
     });
     if (!target) return;
 
     await vscode.workspace.fs.writeFile(target, Buffer.from(text, 'utf8'));
-    void vscode.window.showInformationMessage(`CanMV: Terminal log saved to ${target.fsPath}`);
+    void vscode.window.showInformationMessage(t('CanMV: Terminal log saved to {path}', { path: target.fsPath }));
   }
 
   setInputEnabled(enabled: boolean, reason = '', interruptEnabled = false): void {

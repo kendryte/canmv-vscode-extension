@@ -1,3 +1,5 @@
+import { t } from '../i18n';
+
 export interface ToolPanelLike {
   readonly disposed: boolean;
   reveal(): void;
@@ -41,7 +43,7 @@ export class ToolHost {
     }
     const desc = this.registry.get(id);
     if (!desc) {
-      throw new Error(`Tool not found: ${id}`);
+      throw new Error(t('Tool not found: {id}', { id }));
     }
     const panel = desc.factory();
     this.panels.set(id, panel);

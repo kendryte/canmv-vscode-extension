@@ -7,6 +7,7 @@ import { isResponse, isFrameEvent } from '../protocol/types';
 import { FrameProfiler } from './profiler';
 import { logDebug, logError, logInfo, logWarn } from '../output';
 import type { Event as ProtocolEvent, ProtocolError } from '../protocol/types';
+import { t } from '../i18n';
 
 /**
  * VideoService — manages video preview lifecycle.
@@ -47,7 +48,7 @@ export class VideoService {
       this.clearPreviewState();
     }
     if (this.session.state !== 'connected') {
-      vscode.window.showWarningMessage('CanMV: Please connect to the board first.');
+      vscode.window.showWarningMessage(t('CanMV: Please connect to the board first.'));
       return false;
     }
     if (!options?.assumeScriptRunning) {
@@ -55,7 +56,7 @@ export class VideoService {
       if (!isResponse(runningResult)) {
         const err = runningResult as ProtocolError;
         logWarn('Preview', `Skipped: ${err.error.message}`);
-        vscode.window.showWarningMessage(`CanMV: Cannot enable preview — ${err.error.message}`);
+        vscode.window.showWarningMessage(t('CanMV: Cannot enable preview - {message}', { message: err.error.message }));
         return false;
       }
       const runningPayload = runningResult.result as { running?: boolean };
@@ -111,9 +112,9 @@ export class VideoService {
       if (payload.status === 'error') {
         this.frameSubscription?.dispose();
         this.frameSubscription = null;
-        const message = payload.message || 'Unknown preview error';
+        const message = payload.message || t('Unknown preview error');
         logError('Preview', `Start failed: ${message}`);
-        vscode.window.showErrorMessage(`CanMV: Preview failed — ${message}`);
+        vscode.window.showErrorMessage(t('CanMV: Preview failed - {message}', { message }));
         return false;
       }
       if (payload.status === 'waiting') {
@@ -132,7 +133,7 @@ export class VideoService {
       this.frameSubscription = null;
       const err = result as ProtocolError;
       logError('Preview', `Start failed: ${err.error.message}`);
-      vscode.window.showErrorMessage(`CanMV: Preview failed — ${err.error.message}`);
+      vscode.window.showErrorMessage(t('CanMV: Preview failed - {message}', { message: err.error.message }));
       return false;
     }
   }

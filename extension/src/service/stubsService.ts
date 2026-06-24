@@ -7,6 +7,7 @@ import * as http from 'http';
 import { execFile } from 'child_process';
 import { logError, logInfo, logWarn } from '../output';
 import { resolveNativeBackendCommand } from '../backend/native';
+import { t } from '../i18n';
 
 /**
  * StubsService — downloads K230 MicroPython stubs from CanMV CDN
@@ -272,7 +273,7 @@ export class StubsService {
         const scope = target === vscode.ConfigurationTarget.Workspace ? 'workspace' : 'global';
         logInfo('Stubs', `Pylance python.analysis.stubPath configured (${scope}): ${stubsDir}`);
         vscode.window.showInformationMessage(
-          'CanMV: Pylance stubs configured. Reload window for full effect.'
+          t('CanMV: Pylance stubs configured. Reload window for full effect.')
         );
         return;
       } catch (err) {

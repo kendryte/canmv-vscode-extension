@@ -80,13 +80,15 @@
 
   <script>
     const vscode = acquireVsCodeApi();
+    const l10n = window.__CANMV_L10N__ || {};
+    const text = (key, fallback) => l10n[key] || fallback;
     const terminalWrap = document.getElementById('terminalWrap');
     const terminal = document.getElementById('terminal');
     const promptLine = document.getElementById('promptLine');
     const saveLog = document.getElementById('saveLog');
     const clear = document.getElementById('clear');
     let inputEnabled = false;
-    let disabledReason = 'Connect board to use REPL input';
+    let disabledReason = text('connectReplInput', 'Connect board to use REPL input');
     let interruptEnabled = false;
     let pendingInput = '';
     let pendingFlush = 0;
@@ -183,6 +185,25 @@
     });
     vscode.postMessage({ type: 'terminalReady' });
 
+    function applyLocalization() {
+      document.documentElement.lang = navigator.language || 'en';
+      document.title = text('terminalTitle', 'CanMV Terminal');
+      document.querySelector('.status').textContent = '▶ ' + text('monitoring', 'Monitoring');
+      const labels = document.querySelectorAll('.label');
+      if (labels[0]) labels[0].textContent = text('viewMode', 'View Mode');
+      if (labels[1]) labels[1].textContent = text('source', 'Source');
+      const selects = document.querySelectorAll('.select option');
+      if (selects[0]) selects[0].textContent = text('text', 'Text');
+      if (selects[1]) selects[1].textContent = 'CanMV USBDBG';
+      saveLog.textContent = text('saveLog', 'Save Log');
+      saveLog.title = text('saveLog', 'Save Log');
+      saveLog.setAttribute('aria-label', text('saveLog', 'Save Log'));
+      clear.textContent = text('clear', 'Clear');
+      clear.title = text('clearOutput', 'Clear Output');
+      clear.setAttribute('aria-label', text('clearOutput', 'Clear Output'));
+      terminalWrap.setAttribute('aria-label', text('terminalTitle', 'CanMV Terminal'));
+    }
+
     function append(text) {
       writeTerminal(text);
       renderTerminal();
@@ -192,7 +213,7 @@
     function setInputState(enabled, reason, canInterrupt) {
       inputEnabled = enabled;
       interruptEnabled = canInterrupt;
-      disabledReason = reason || 'REPL input unavailable';
+      disabledReason = reason || text('replInputUnavailable', 'REPL input unavailable');
       renderInputState();
       if (enabled) {
         terminalWrap.focus();
@@ -448,6 +469,7 @@
       terminalWrap.scrollTop = terminalWrap.scrollHeight;
     }
 
+    applyLocalization();
     renderInputState();
   </script>
 </body>

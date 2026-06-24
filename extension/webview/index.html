@@ -137,6 +137,9 @@
 
   <script>
     const vscode = acquireVsCodeApi();
+    const l10n = window.__CANMV_L10N__ || {};
+    const text = (key, fallback) => l10n[key] || fallback;
+    const formatText = (template, values) => template.replace(/\{(\w+)\}/g, (_, key) => values[key] ?? '');
     const statusDot = document.getElementById('status-dot');
     const stateText = document.getElementById('state-text');
     const imageInfo = document.getElementById('image-info');
@@ -185,10 +188,10 @@
     let lastFpsSampleAt = 0;
 
     const stateStyles = {
-      disconnected: { dot: 'off', text: 'Disconnected' },
-      connecting:    { dot: 'on',  text: 'Connecting...' },
-      connected:     { dot: 'on',  text: 'Connected' },
-      streaming:     { dot: 'stream', text: 'Streaming' }
+      disconnected: { dot: 'off', text: text('stateDisconnected', 'Disconnected') },
+      connecting:    { dot: 'on',  text: text('stateConnecting', 'Connecting...') },
+      connected:     { dot: 'on',  text: text('stateConnected', 'Connected') },
+      streaming:     { dot: 'stream', text: text('stateStreaming', 'Streaming') }
     };
 
     window.addEventListener('message', (e) => {
@@ -230,7 +233,7 @@
           break;
         case 'stopped':
           resetFps();
-          imageInfo.textContent = 'Image: --';
+          imageInfo.textContent = text('imageEmpty', 'Image: --');
           pendingFrame = null; isRendering = false;
           currentState = 'connected'; updateControls();
           break;
@@ -242,7 +245,7 @@
           }
           const frameData = normalizeFrameData(m.data, m.byteLength);
           if (!frameData) {
-            imageInfo.textContent = 'Image: decode error';
+            imageInfo.textContent = text('imageDecodeError', 'Image: decode error');
             console.error('Unsupported frame payload', m.data);
             break;
           }
@@ -303,7 +306,7 @@
           if (frameId % 100 === 0) flushProfile();
         }
       } catch (e) {
-        imageInfo.textContent = 'Image: decode error';
+        imageInfo.textContent = text('imageDecodeError', 'Image: decode error');
         console.error(e);
       }
       finally {
@@ -341,7 +344,7 @@
 
     function clearCanvas() {
       pendingFrame = null; lastFrameData = null; lastImageSize = null; isRendering = false; hasFrame = false;
-      imageInfo.textContent = 'Image: --';
+      imageInfo.textContent = text('imageEmpty', 'Image: --');
       canvas.style.width = '';
       canvas.style.height = '';
       canvasStage.style.width = '';
@@ -364,10 +367,10 @@
 
     function updateImageInfo() {
       if (!hasFrame || !lastImageSize) {
-        imageInfo.textContent = 'Image: --';
+        imageInfo.textContent = text('imageEmpty', 'Image: --');
         return;
       }
-      imageInfo.textContent = `Image: ${lastImageSize.width}×${lastImageSize.height} | ${scaleMode === 'fit' ? 'Fit' : '1:1'}`;
+      imageInfo.textContent = `${text('image', 'Image')}: ${lastImageSize.width}×${lastImageSize.height} | ${scaleMode === 'fit' ? text('fit', 'Fit') : '1:1'}`;
     }
 
     function applyCanvasScale(centerOriginal = false) {
@@ -416,7 +419,7 @@
       frameCount = 0;
       lastFpsValue = null;
       lastFpsSampleAt = 0;
-      fpsDisplay.textContent = 'FPS: --';
+      fpsDisplay.textContent = text('fpsEmpty', 'FPS: --');
     }
 
     function resetFpsSamples() {
@@ -447,7 +450,10 @@
     }
 
     function updateFpsDisplay(now = performance.now()) {
-      fpsDisplay.textContent = `FPS: ${formatFps(getFpsValue(now))}${frameCount ? ` (fc:${frameCount})` : ''}`;
+      const value = formatFps(getFpsValue(now));
+      fpsDisplay.textContent = frameCount
+        ? formatText(text('fpsWithFrameCount', 'FPS: {value} (fc:{frameCount})'), { value, frameCount })
+        : formatText(text('fpsLabel', 'FPS: {value}'), { value });
     }
 
     function recordFpsSample(now) {
@@ -478,11 +484,11 @@
     function updateControls() {
       disableBtn.disabled = currentState === 'disconnected' || currentState === 'connecting';
       disableBtn.textContent = previewDisabled ? '◉' : '⊘';
-      disableBtn.title = previewDisabled ? 'Enable Preview' : 'Disable Preview';
+      disableBtn.title = previewDisabled ? text('enablePreview', 'Enable Preview') : text('disablePreview', 'Disable Preview');
       disableBtn.setAttribute('aria-label', disableBtn.title);
       scaleBtn.disabled = !hasFrame;
       scaleBtn.textContent = scaleMode === 'fit' ? '1:1' : '⛶';
-      scaleBtn.title = scaleMode === 'fit' ? 'Show Original Size' : 'Fit to Window';
+      scaleBtn.title = scaleMode === 'fit' ? text('showOriginalSize', 'Show Original Size') : text('fitToWindow', 'Fit to Window');
       scaleBtn.setAttribute('aria-label', scaleBtn.title);
       scaleBtn.setAttribute('aria-pressed', scaleMode === 'original' ? 'true' : 'false');
       rotateBtn.disabled = !hasFrame;
@@ -805,7 +811,11 @@
       const count = channel.bins[bin];
       histogramHover = { index, bin };
       renderHistogramChannels(lastHistogramChannels);
-      showHistogramTooltip(event.clientX, event.clientY, `Count ${count} (${channel.label} ${position})`);
+      showHistogramTooltip(
+        event.clientX,
+        event.clientY,
+        formatText(text('histogramTooltip', 'Count {count} ({label} {position})'), { count, label: channel.label, position })
+      );
     }
 
     function showHistogramTooltip(clientX, clientY, text) {
@@ -832,8 +842,10 @@
 
     function renderStats(statsEl, stats) {
       const rows = [
-        ['Mean', stats.mean], ['Median', stats.median], ['Mode', stats.mode], ['StDev', stats.stdev],
-        ['Min', stats.min], ['Max', stats.max], ['LQ', stats.lq], ['UQ', stats.uq]
+        [text('statMean', 'Mean'), stats.mean], [text('statMedian', 'Median'), stats.median],
+        [text('statMode', 'Mode'), stats.mode], [text('statStdev', 'StDev'), stats.stdev],
+        [text('statMin', 'Min'), stats.min], [text('statMax', 'Max'), stats.max],
+        [text('statLq', 'LQ'), stats.lq], [text('statUq', 'UQ'), stats.uq]
       ];
       statsEl.textContent = '';
       for (const [label, value] of rows) {
@@ -1019,8 +1031,37 @@
       updateFpsDisplay();
     }, 500);
 
+    function applyLocalization() {
+      document.documentElement.lang = navigator.language || 'en';
+      document.title = text('previewTitle', 'CanMV Preview');
+      imageInfo.textContent = text('imageEmpty', 'Image: --');
+      fpsDisplay.textContent = text('fpsEmpty', 'FPS: --');
+      disableBtn.title = text('disablePreview', 'Disable Preview');
+      disableBtn.setAttribute('aria-label', text('disablePreview', 'Disable Preview'));
+      scaleBtn.title = text('showOriginalSize', 'Show Original Size');
+      scaleBtn.setAttribute('aria-label', text('showOriginalSize', 'Show Original Size'));
+      rotateBtn.title = text('rotateFrame', 'Rotate Frame');
+      rotateBtn.setAttribute('aria-label', text('rotateFrame', 'Rotate Frame'));
+      saveBtn.title = text('saveImage', 'Save Image');
+      saveBtn.setAttribute('aria-label', text('saveImage', 'Save Image'));
+      document.querySelector('.select-label').textContent = text('histogram', 'Histogram');
+      histogramSelect.title = text('histogramColorSpace', 'Histogram color space');
+      histogramSelect.setAttribute('aria-label', text('histogramColorSpace', 'Histogram color space'));
+      const options = {
+        rgb: text('rgbColorSpace', 'RGB Color Space'),
+        grayscale: text('grayscaleColorSpace', 'Grayscale Color Space'),
+        lab: text('labColorSpace', 'LAB Color Space'),
+        yuv: text('yuvColorSpace', 'YUV Color Space'),
+        none: text('none', 'None')
+      };
+      for (const option of histogramSelect.options) {
+        option.textContent = options[option.value] || option.textContent;
+      }
+    }
+
+    applyLocalization();
     statusDot.className = 'indicator off';
-    stateText.textContent = 'Disconnected';
+    stateText.textContent = text('stateDisconnected', 'Disconnected');
     applyCanvasScale();
     applyHistogramMode();
     updateControls();
