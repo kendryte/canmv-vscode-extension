@@ -260,8 +260,16 @@ export class StubsService {
     // Use the python.analysis sub-section directly (not python → analysis object)
     const config = vscode.workspace.getConfiguration('python.analysis');
     const currentStubPath = config.get<string>('stubPath') || '';
+    const currentSeverityOverrides = config.get<Record<string, string>>('diagnosticSeverityOverrides') || {};
+    const nextSeverityOverrides = {
+      ...currentSeverityOverrides,
+      reportMissingModuleSource: 'none',
+    };
 
-    if (currentStubPath === stubsDir) {
+    if (
+      currentStubPath === stubsDir &&
+      currentSeverityOverrides.reportMissingModuleSource === 'none'
+    ) {
       logInfo('Stubs', `Pylance stubPath already configured: ${stubsDir}`);
       return;
     }
@@ -269,7 +277,12 @@ export class StubsService {
     // Try workspace-level first, fall back to global
     for (const target of [vscode.ConfigurationTarget.Workspace, vscode.ConfigurationTarget.Global]) {
       try {
-        await config.update('stubPath', stubsDir, target);
+        if (currentStubPath !== stubsDir) {
+          await config.update('stubPath', stubsDir, target);
+        }
+        if (currentSeverityOverrides.reportMissingModuleSource !== 'none') {
+          await config.update('diagnosticSeverityOverrides', nextSeverityOverrides, target);
+        }
         const scope = target === vscode.ConfigurationTarget.Workspace ? 'workspace' : 'global';
         logInfo('Stubs', `Pylance python.analysis.stubPath configured (${scope}): ${stubsDir}`);
         vscode.window.showInformationMessage(

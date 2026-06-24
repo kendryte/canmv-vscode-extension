@@ -83,7 +83,7 @@ You can copy the generated tuple, or select an existing grayscale/LAB tuple in t
 
 Open the Device view after connecting. Directories can be expanded, and files can be opened from the tree. Right-click a directory or mounted root to create files/folders, upload files, or upload a folder. Right-click files or folders to download, rename, or delete them.
 
-Python files opened from the Device tree are mirrored into `.canmv/remote` inside the current workspace. Saving a mirrored file syncs it back to the board automatically. The extension also updates `python.analysis.extraPaths` so Pylance can resolve imports from the mirror.
+Python files opened from the Device tree are mirrored into an extension-managed temp folder outside the current workspace. Saving a mirrored file syncs it back to the board automatically. The extension also updates `python.analysis.extraPaths` so Pylance can resolve imports from the mirror.
 
 ### Save Startup Files
 

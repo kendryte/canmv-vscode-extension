@@ -1,10 +1,12 @@
 import * as path from 'path';
+import * as os from 'os';
+import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import { FileService } from './fileService';
 import { logInfo, logWarn } from '../output';
 
 const CANMV_SCHEME = 'canmv';
-const MIRROR_DIR = '.canmv';
+const MIRROR_DIR = 'canmv-vscode';
 const REMOTE_DIR = 'remote';
 const PYTHON_EXTENSIONS = new Set(['.py', '.pyi']);
 const COMMON_IMPORT_ROOTS = ['sdcard', 'data', 'udisk'];
@@ -85,10 +87,9 @@ export class RemoteMirrorService {
 
   private mirrorRootUri(): vscode.Uri {
     const workspace = vscode.workspace.workspaceFolders?.find(folder => folder.uri.scheme === 'file');
-    if (workspace) {
-      return vscode.Uri.joinPath(workspace.uri, MIRROR_DIR, REMOTE_DIR);
-    }
-    return vscode.Uri.joinPath(this.context.globalStorageUri, REMOTE_DIR);
+    const scope = workspace?.uri.toString() || this.context.globalStorageUri.toString();
+    const scopeHash = crypto.createHash('sha256').update(scope).digest('hex').slice(0, 16);
+    return vscode.Uri.file(path.join(os.tmpdir(), MIRROR_DIR, scopeHash, REMOTE_DIR));
   }
 
   private findOpenDocument(uri: vscode.Uri): vscode.TextDocument | undefined {
