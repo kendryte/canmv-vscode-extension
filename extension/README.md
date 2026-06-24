@@ -15,7 +15,7 @@ The CanMV for Visual Studio Code extension brings CanMV K230 board development i
 - Send virtual touch clicks from the preview when the connected firmware reports virtual touch support.
 - Browse mounted device storage, including `/sdcard`, `/data`, and `/udisk`.
 - Create, rename, delete, upload, download, open, edit, and auto-sync remote files.
-- Save the active editor directly as `/sdcard/main.py` or `/boot.py`.
+- Save the active editor directly as `/sdcard/main.py` or `/sdcard/boot.py`.
 - Use the CanMV Terminal panel for board output, REPL input, Ctrl-C script interrupt, log clearing, and log export.
 - Configure K230 MicroPython stubs for Pylance, with automatic download and local cache reuse.
 - Inspect extension, backend, stubs, preview, and transfer logs in the `CanMV` Output channel.
@@ -92,7 +92,7 @@ Python files opened from the Device tree are mirrored into an extension-managed 
 Use the editor context menu while connected:
 
 - `CanMV: Save as main.py` writes the active editor to `/sdcard/main.py`.
-- `CanMV: Save as boot.py` writes the active editor to `/boot.py`.
+- `CanMV: Save as boot.py` writes the active editor to `/sdcard/boot.py`.
 
 ### Use the Terminal
 
@@ -114,7 +114,7 @@ The CanMV Terminal panel keeps recent scrollback, mirrors board/script output, a
 | `CanMV: Refresh Explorer` | Refresh the Device tree. |
 | `CanMV: Run Active File on K230` | Run the active editor through the K230 workflow. |
 | `CanMV: Save as main.py` | Save the active editor to `/sdcard/main.py`. |
-| `CanMV: Save as boot.py` | Save the active editor to `/boot.py`. |
+| `CanMV: Save as boot.py` | Save the active editor to `/sdcard/boot.py`. |
 | `CanMV: New File` | Create a file in the selected remote directory. |
 | `CanMV: New Folder` | Create a folder in the selected remote directory. |
 | `CanMV: Upload Files...` | Upload one or more local files to the selected remote directory. |

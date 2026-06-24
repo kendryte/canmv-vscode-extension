@@ -1044,14 +1044,14 @@ export function activate(context: vscode.ExtensionContext) {
       const text = editor.document.getText();
       const data = new TextEncoder().encode(text);
       try {
-        const ok = await fileService.writeFile('/boot.py', data);
+        const ok = await fileService.writeFile('/sdcard/boot.py', data);
         if (!ok) {
-          vscode.window.showWarningMessage(t('CanMV: Save as /boot.py was rejected by the board'));
+          vscode.window.showWarningMessage(t('CanMV: Save as /sdcard/boot.py was rejected by the board'));
           return;
         }
-        vscode.window.showInformationMessage(t('CanMV: Saved as /boot.py'));
+        vscode.window.showInformationMessage(t('CanMV: Saved as /sdcard/boot.py'));
       } catch (err) {
-        showRemoteOperationError(t('Save as /boot.py'), err);
+        showRemoteOperationError(t('Save as /sdcard/boot.py'), err);
       }
     }),
     vscode.commands.registerCommand('canmv.openTool', (toolId?: string) => {

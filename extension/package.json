@@ -2,7 +2,7 @@
   "name": "canmv-vscode",
   "displayName": "CanMV",
   "description": "%extension.description%",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "kendryte747",
   "repository": {
     "type": "git",
