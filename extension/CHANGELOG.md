@@ -1,17 +1,22 @@
 # Changelog
 
-## 0.3.3
+## 0.4.0
 
-- Fix remote file mirror path reuse issue
-- Fix Pylance setting overrided
-
-## 0.3.2
-
-- Fix boot.py save path
-
-## 0.3.1
-
-- Update README.md
+- Added Python stubs system: automatic download of K230 MicroPython stubs for Pylance code completion, with board firmware revision matching and local caching
+- Added Controls view in the activity bar with board connection status, state indicator, and quick actions
+- Added Toolbox view with tool launcher (Preview, Threshold Editor)
+- Added Device tree context menu commands: Run on K230, Save as main.py, Save as boot.py
+- Added file upload/download support with transfer progress and recursive directory operations
+- Added remote file execution (`fileExec`) support
+- Improved remote file mirroring: isolated per-workspace mirror directories under a system temp folder, with automatic Pylance import path injection for cross-file references
+- Improved board connection state management: readiness tracking, busy gates, post-script pause window to prevent operations during board transitions
+- Improved file read caching with size/mtime staleness detection and incomplete read detection
+- Improved script execution: Run Script now works from any focused webview by tracking the last active Python editor
+- Improved localization: comprehensive Simplified Chinese translations for all commands, views, error messages, and webview strings
+- Fixed Pylance settings being overwritten when configuring extra paths and stub paths
+- Fixed remote file mirror path collisions by normalizing path keys
+- Fixed boot.py save path to target `/sdcard/boot.py`
+- Rewrote extension README with features, quick start, workflows, commands reference, settings table, and troubleshooting guide
 
 ## 0.3.0
 
