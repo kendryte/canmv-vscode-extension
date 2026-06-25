@@ -1,6 +1,19 @@
 # Changelog
 
+## 0.3.3
+
+- Fix remote file mirror path reuse issue
+- Fix Pylance setting overrided
+
+## 0.3.2
+
+- Fix boot.py save path
+
 ## 0.3.1
+
+- Update README.md
+
+## 0.3.0
 
 - Added localization support for extension commands, views, webviews, and user-facing messages, including Simplified Chinese strings.
 - Improved remote mirror directory management and Pylance configuration handling for device files and stubs.
