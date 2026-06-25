@@ -89,7 +89,8 @@ export class RemoteMirrorService {
     const workspace = vscode.workspace.workspaceFolders?.find(folder => folder.uri.scheme === 'file');
     const scope = workspace?.uri.toString() || this.context.globalStorageUri.toString();
     const scopeHash = crypto.createHash('sha256').update(scope).digest('hex').slice(0, 16);
-    return vscode.Uri.file(path.join(os.tmpdir(), MIRROR_DIR, scopeHash, REMOTE_DIR));
+    const userDir = `${MIRROR_DIR}-${os.userInfo().username}`;
+    return vscode.Uri.file(path.join(os.tmpdir(), userDir, scopeHash, REMOTE_DIR));
   }
 
   private findOpenDocument(uri: vscode.Uri): vscode.TextDocument | undefined {

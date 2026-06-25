@@ -21,7 +21,7 @@ import { t } from '../i18n';
  *   ~/.kendryte/k230_canmv_stubs/${revision}/
  *
  * Pylance setting:
- *   python.analysis.stubPath = "~/.kendryte/k230_canmv_stubs/${revision}"
+ *   python.analysis.extraPaths includes "~/.kendryte/k230_canmv_stubs/${revision}"
  */
 export class StubsService {
   private static readonly lastRevisionKey = 'canmv.stubs.lastRevision';
@@ -254,37 +254,34 @@ export class StubsService {
 
   /**
    * Configure Pylance to use the given stubs directory.
-   * Sets python.analysis.stubPath in workspace settings (or global fallback).
+   * Replaces only the CanMV-owned stubs path in python.analysis.extraPaths.
    */
   private async configurePylance(stubsDir: string): Promise<void> {
     // Use the python.analysis sub-section directly (not python → analysis object)
     const config = vscode.workspace.getConfiguration('python.analysis');
+    const currentExtraPaths = config.get<string[]>('extraPaths') || [];
     const currentStubPath = config.get<string>('stubPath') || '';
-    const currentSeverityOverrides = config.get<Record<string, string>>('diagnosticSeverityOverrides') || {};
-    const nextSeverityOverrides = {
-      ...currentSeverityOverrides,
-      reportMissingModuleSource: 'none',
-    };
+    const nextExtraPaths = this.replaceCanMVStubsPath(currentExtraPaths, stubsDir);
+    const extraPathsChanged = !this.stringArraysEqual(currentExtraPaths, nextExtraPaths);
+    const shouldUpdateLegacyStubPath =
+      this.isCanMVStubsPath(currentStubPath) && !this.pathsEqual(currentStubPath, stubsDir);
 
-    if (
-      currentStubPath === stubsDir &&
-      currentSeverityOverrides.reportMissingModuleSource === 'none'
-    ) {
-      logInfo('Stubs', `Pylance stubPath already configured: ${stubsDir}`);
+    if (!extraPathsChanged && !shouldUpdateLegacyStubPath) {
+      logInfo('Stubs', `Pylance extraPaths already configured: ${stubsDir}`);
       return;
     }
 
     // Try workspace-level first, fall back to global
     for (const target of [vscode.ConfigurationTarget.Workspace, vscode.ConfigurationTarget.Global]) {
       try {
-        if (currentStubPath !== stubsDir) {
+        if (extraPathsChanged) {
+          await config.update('extraPaths', nextExtraPaths, target);
+        }
+        if (shouldUpdateLegacyStubPath) {
           await config.update('stubPath', stubsDir, target);
         }
-        if (currentSeverityOverrides.reportMissingModuleSource !== 'none') {
-          await config.update('diagnosticSeverityOverrides', nextSeverityOverrides, target);
-        }
         const scope = target === vscode.ConfigurationTarget.Workspace ? 'workspace' : 'global';
-        logInfo('Stubs', `Pylance python.analysis.stubPath configured (${scope}): ${stubsDir}`);
+        logInfo('Stubs', `Pylance python.analysis.extraPaths configured (${scope}): ${stubsDir}`);
         vscode.window.showInformationMessage(
           t('CanMV: Pylance stubs configured. Reload window for full effect.')
         );
@@ -294,7 +291,57 @@ export class StubsService {
       }
     }
 
-    logError('Stubs', `Failed to configure Pylance stubPath: ${stubsDir}`);
+    logError('Stubs', `Failed to configure Pylance stubs path: ${stubsDir}`);
+  }
+
+  private replaceCanMVStubsPath(extraPaths: string[], stubsDir: string): string[] {
+    const next: string[] = [];
+    let inserted = false;
+
+    for (const entry of extraPaths) {
+      if (this.isCanMVStubsPath(entry)) {
+        if (!inserted) {
+          next.push(stubsDir);
+          inserted = true;
+        }
+        continue;
+      }
+      next.push(entry);
+    }
+
+    if (!inserted && !next.some(entry => this.pathsEqual(entry, stubsDir))) {
+      next.push(stubsDir);
+    }
+
+    return next;
+  }
+
+  private isCanMVStubsPath(value: string): boolean {
+    if (!value) return false;
+
+    const baseDir = this.normalizeFsPathForCompare(this.baseDir);
+    const candidate = this.normalizeFsPathForCompare(value);
+    const relative = path.relative(baseDir, candidate);
+    return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+  }
+
+  private pathsEqual(left: string, right: string): boolean {
+    return this.normalizeFsPathForCompare(left) === this.normalizeFsPathForCompare(right);
+  }
+
+  private normalizeFsPathForCompare(value: string): string {
+    const trimmed = value.trim();
+    const expanded = trimmed === '~'
+      ? os.homedir()
+      : trimmed.startsWith('~/') || trimmed.startsWith('~\\')
+        ? path.join(os.homedir(), trimmed.slice(2))
+        : trimmed;
+    const normalized = path.resolve(path.normalize(expanded));
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+  }
+
+  private stringArraysEqual(left: string[], right: string[]): boolean {
+    return left.length === right.length && left.every((value, index) => value === right[index]);
   }
 
   // ── HTTP Helpers ──
