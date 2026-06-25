@@ -65,22 +65,26 @@
       {
         "command": "canmv.connectBoard",
         "title": "%canmv.command.connectBoard%",
-        "icon": "$(plug)"
+        "icon": "$(plug)",
+        "enablement": "canmv.disconnected && !canmv.connectionBusy && !canmv.scriptBusy"
       },
       {
         "command": "canmv.disconnectBoard",
         "title": "%canmv.command.disconnectBoard%",
-        "icon": "$(debug-disconnect)"
+        "icon": "$(debug-disconnect)",
+        "enablement": "canmv.connected && !canmv.connectionBusy && !canmv.scriptBusy"
       },
       {
         "command": "canmv.runCurrentScript",
         "title": "%canmv.command.runCurrentScript%",
-        "icon": "$(run)"
+        "icon": "$(run)",
+        "enablement": "canmv.connected && canmv.boardReady && !canmv.scriptRunning && !canmv.connectionBusy && !canmv.scriptBusy"
       },
       {
         "command": "canmv.stopScript",
         "title": "%canmv.command.stopScript%",
-        "icon": "$(debug-stop)"
+        "icon": "$(debug-stop)",
+        "enablement": "canmv.connected && canmv.scriptRunning && !canmv.connectionBusy && !canmv.scriptBusy"
       },
       {
         "command": "canmv.startPreview",
@@ -95,7 +99,8 @@
       {
         "command": "canmv.runRemoteFile",
         "title": "%canmv.command.runRemoteFile%",
-        "icon": "$(play)"
+        "icon": "$(play)",
+        "enablement": "canmv.connected && canmv.boardReady && !canmv.scriptRunning && !canmv.connectionBusy && !canmv.scriptBusy"
       },
       {
         "command": "canmv.openTool",
@@ -115,17 +120,20 @@
       {
         "command": "canmv.runOnK230",
         "title": "%canmv.command.runOnK230%",
-        "icon": "$(debug-start)"
+        "icon": "$(debug-start)",
+        "enablement": "canmv.connected && canmv.boardReady && !canmv.scriptRunning && !canmv.connectionBusy && !canmv.scriptBusy"
       },
       {
         "command": "canmv.saveAsMainPy",
         "title": "%canmv.command.saveAsMainPy%",
-        "icon": "$(save-as)"
+        "icon": "$(save-as)",
+        "enablement": "canmv.remoteFilesAvailable"
       },
       {
         "command": "canmv.saveAsBootPy",
         "title": "%canmv.command.saveAsBootPy%",
-        "icon": "$(save-as)"
+        "icon": "$(save-as)",
+        "enablement": "canmv.remoteFilesAvailable"
       },
       {
         "command": "canmv.newRemoteFile",
@@ -210,7 +218,7 @@
       "view/title": [
         {
           "command": "canmv.connectBoard",
-          "when": "view == canmv.controls && canmv.disconnected",
+          "when": "view == canmv.controls && !canmv.connected",
           "group": "navigation@1"
         },
         {
@@ -235,75 +243,76 @@
         },
         {
           "command": "canmv.downloadRemoteItem",
-          "when": "view == canmv.explorer && canmv.connected && canmv.explorerSelected",
+          "when": "view == canmv.explorer && canmv.remoteFilesAvailable && canmv.explorerSelected",
           "group": "navigation@2"
         },
         {
           "command": "canmv.uploadFiles",
-          "when": "view == canmv.explorer && canmv.connected && canmv.explorerSelectedDirectory",
+          "when": "view == canmv.explorer && canmv.remoteFilesAvailable && canmv.explorerSelectedDirectory",
           "group": "navigation@3"
         },
         {
           "command": "canmv.uploadFolder",
-          "when": "view == canmv.explorer && canmv.connected && canmv.explorerSelectedDirectory",
+          "when": "view == canmv.explorer && canmv.remoteFilesAvailable && canmv.explorerSelectedDirectory",
           "group": "navigation@4"
         },
         {
           "command": "canmv.renameRemoteItem",
-          "when": "view == canmv.explorer && canmv.connected && canmv.explorerSelectedMutable",
+          "when": "view == canmv.explorer && canmv.remoteFilesAvailable && canmv.explorerSelectedMutable",
           "group": "navigation@5"
         },
         {
           "command": "canmv.deleteRemoteItem",
-          "when": "view == canmv.explorer && canmv.connected && canmv.explorerSelectedMutable",
+          "when": "view == canmv.explorer && canmv.remoteFilesAvailable && canmv.explorerSelectedMutable",
           "group": "navigation@6"
         }
       ],
       "view/item/context": [
         {
           "command": "canmv.runRemoteFile",
-          "when": "view == canmv.explorer && viewItem == pythonFile",
+          "when": "view == canmv.explorer && viewItem == pythonFile && canmv.remoteFilesAvailable",
           "group": "inline@1"
         },
         {
           "command": "canmv.newRemoteFile",
-          "when": "view == canmv.explorer && (viewItem == mountRoot || viewItem == directory)",
+          "when": "view == canmv.explorer && canmv.remoteFilesAvailable && (viewItem == mountRoot || viewItem == directory)",
           "group": "1_new@1"
         },
         {
           "command": "canmv.newRemoteFolder",
-          "when": "view == canmv.explorer && (viewItem == mountRoot || viewItem == directory)",
+          "when": "view == canmv.explorer && canmv.remoteFilesAvailable && (viewItem == mountRoot || viewItem == directory)",
           "group": "1_new@2"
         },
         {
           "command": "canmv.uploadFiles",
-          "when": "view == canmv.explorer && (viewItem == mountRoot || viewItem == directory)",
+          "when": "view == canmv.explorer && canmv.remoteFilesAvailable && (viewItem == mountRoot || viewItem == directory)",
           "group": "1_new@3"
         },
         {
           "command": "canmv.uploadFolder",
-          "when": "view == canmv.explorer && (viewItem == mountRoot || viewItem == directory)",
+          "when": "view == canmv.explorer && canmv.remoteFilesAvailable && (viewItem == mountRoot || viewItem == directory)",
           "group": "1_new@4"
         },
         {
           "command": "canmv.renameRemoteItem",
-          "when": "view == canmv.explorer && (viewItem == file || viewItem == pythonFile || viewItem == directory)",
+          "when": "view == canmv.explorer && canmv.remoteFilesAvailable && (viewItem == file || viewItem == pythonFile || viewItem == directory)",
           "group": "2_edit@1"
         },
         {
           "command": "canmv.deleteRemoteItem",
-          "when": "view == canmv.explorer && (viewItem == file || viewItem == pythonFile || viewItem == directory)",
+          "when": "view == canmv.explorer && canmv.remoteFilesAvailable && (viewItem == file || viewItem == pythonFile || viewItem == directory)",
           "group": "2_edit@2"
         },
         {
           "command": "canmv.downloadRemoteItem",
-          "when": "view == canmv.explorer && (viewItem == mountRoot || viewItem == directory || viewItem == file || viewItem == pythonFile)",
+          "when": "view == canmv.explorer && canmv.remoteFilesAvailable && (viewItem == mountRoot || viewItem == directory || viewItem == file || viewItem == pythonFile)",
           "group": "3_transfer@1"
         }
       ],
       "canmv.editorMenu": [
         {
           "command": "canmv.runOnK230",
+          "when": "canmv.connected && !canmv.scriptRunning",
           "group": "1_run@1"
         },
         {

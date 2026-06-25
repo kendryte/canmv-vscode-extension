@@ -2,6 +2,8 @@ package boardprotocol
 
 import (
 	"fmt"
+	"os"
+	"time"
 
 	"canmv-backend/internal/usbdbg"
 )
@@ -49,8 +51,15 @@ func Negotiate(board *usbdbg.Board) Handler {
 
 	version, flags, err := board.Capabilities()
 	if err != nil {
-		profile.flags = CapTxBuf
-		return newLegacy(profile)
+		firstErr := err
+		_, _ = board.DrainInput(120*time.Millisecond, 8)
+		version, flags, err = board.Capabilities()
+		if err != nil {
+			_, _ = board.DrainInput(30*time.Millisecond, 4)
+			_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] capabilities negotiation failed first=%v retry=%v\n", firstErr, err)
+			profile.flags = CapTxBuf
+			return newLegacy(profile)
+		}
 	}
 
 	profile.kind = KindV2

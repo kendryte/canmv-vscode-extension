@@ -19,6 +19,7 @@ export class CanmvExplorer implements vscode.TreeDataProvider<FileTreeItem> {
 
   private connected = false;
   private fileExplorerSupported = true;
+  private unavailableMessage = t('Not connected');
 
   constructor(private fileOps: FileServiceCallbacks) {}
 
@@ -26,9 +27,10 @@ export class CanmvExplorer implements vscode.TreeDataProvider<FileTreeItem> {
     this.setConnectionState(connected, true);
   }
 
-  setConnectionState(connected: boolean, fileExplorerSupported: boolean): void {
+  setConnectionState(connected: boolean, fileExplorerSupported: boolean, unavailableMessage = t('Not connected')): void {
     this.connected = connected;
     this.fileExplorerSupported = fileExplorerSupported;
+    this.unavailableMessage = unavailableMessage;
     this.refresh();
   }
 
@@ -37,11 +39,11 @@ export class CanmvExplorer implements vscode.TreeDataProvider<FileTreeItem> {
   }
 
   async getChildren(element?: FileTreeItem): Promise<FileTreeItem[]> {
-    if (!this.connected) {
-      return [FileTreeItem.message(t('Not connected'))];
-    }
     if (!this.fileExplorerSupported) {
       return [FileTreeItem.message(t('File explorer is not supported by this firmware'))];
+    }
+    if (!this.connected) {
+      return [FileTreeItem.message(this.unavailableMessage)];
     }
 
     if (!element) {

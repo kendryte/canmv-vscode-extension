@@ -67,12 +67,31 @@ export function activate(context: vscode.ExtensionContext) {
   const boardService = new BoardService(session, new BoardDetector(session));
   const scriptService = new ScriptService(session);
   const fileService = new FileService(session);
-  const remoteMirrorService = new RemoteMirrorService(context, fileService);
+  let remoteFilesAvailable: () => boolean = () => false;
+  let remoteFilesUnavailableMessage: () => string = () => t('Not connected');
+  const remoteMirrorService = new RemoteMirrorService(
+    context,
+    fileService,
+    () => remoteFilesAvailable(),
+    () => remoteFilesUnavailableMessage(),
+  );
   let connected = false;
   let disconnected = true;
   let scriptRunning = false;
   let boardReady = false;
+  let pendingBoardReadyEvent = false;
+  let connectionBusy = false;
+  let connectionPhase: 'idle' | 'connecting' | 'disconnecting' = 'idle';
+  let scriptBusy = false;
+  let lastOperationEndTime = 0;
+  let remoteFilesPausedUntil = 0;
+  let remoteFilesPauseTimer: ReturnType<typeof setTimeout> | undefined;
   let controlProvider: CanmvControlViewProvider | undefined;
+  let explorer: CanmvExplorer | undefined;
+  let explorerRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let updateExplorerConnectionState = () => {};
+  let refreshExplorerSoon: (delayMs?: number) => void = () => {};
+  let pauseRemoteFiles: (durationMs: number) => void = () => {};
   let onScriptRunningContextChanged = () => {};
   const boardStatusLabel = (info: BoardInfo) => {
     const board = info.boardName || info.boardType;
@@ -87,20 +106,98 @@ export function activate(context: vscode.ExtensionContext) {
     }
     return states.disconnected();
   };
+  const setBoardReadyContext = (value: boolean) => {
+    boardReady = value;
+    void vscode.commands.executeCommand('setContext', 'canmv.boardReady', value);
+    controlProvider?.setState({ boardReady: value });
+    updateTerminalInputState();
+    updateExplorerConnectionState();
+    if (value) {
+      refreshExplorerSoon(250);
+    }
+  };
+  const resetBoardReadiness = () => {
+    pendingBoardReadyEvent = false;
+    setBoardReadyContext(false);
+  };
+  const markBoardReadyEvent = () => {
+    pendingBoardReadyEvent = true;
+    if (boardService.boardInfo()) {
+      setBoardReadyContext(true);
+    }
+  };
+  const setConnectionBusyContext = (value: boolean) => {
+    connectionBusy = value;
+    void vscode.commands.executeCommand('setContext', 'canmv.connectionBusy', value);
+    updateTerminalInputState();
+    updateExplorerConnectionState();
+    if (!value) {
+      refreshExplorerSoon(250);
+    }
+  };
+  const setConnectionPhase = (value: 'idle' | 'connecting' | 'disconnecting') => {
+    connectionPhase = value;
+    controlProvider?.setState({ connectionPhase: value });
+  };
+  const setScriptBusyContext = (value: boolean) => {
+    scriptBusy = value;
+    void vscode.commands.executeCommand('setContext', 'canmv.scriptBusy', value);
+    updateTerminalInputState();
+    updateExplorerConnectionState();
+    if (!value) {
+      refreshExplorerSoon(250);
+    }
+  };
+  const beginScriptOperation = (options: { allowWhileConnectionBusy?: boolean; skipCooldown?: boolean } = {}) => {
+    if (scriptBusy || (connectionBusy && !options.allowWhileConnectionBusy)) return false;
+    // Debounce: enforce minimum cooldown between board operations to prevent
+    // overwhelming the board with rapid soft-reset / ScriptExec cycles.
+    if (!options.skipCooldown) {
+      const cooldownMs = 500;
+      const elapsed = Date.now() - lastOperationEndTime;
+      if (elapsed < cooldownMs) {
+        logDebug('Script', `Operation deferred: cooldown ${cooldownMs - elapsed}ms remaining`);
+        return false;
+      }
+    }
+    setScriptBusyContext(true);
+    return true;
+  };
+  const endScriptOperation = () => {
+    lastOperationEndTime = Date.now();
+    setScriptBusyContext(false);
+  };
   const setConnectionContexts = (state: string) => {
+    if (state === 'connecting') {
+      setConnectionPhase('connecting');
+    } else if (state === 'disconnected') {
+      setConnectionPhase('idle');
+    }
     connected = state === 'connected' || state === 'streaming';
     disconnected = state === 'disconnected';
+    if (state === 'connecting' || state === 'disconnected') {
+      resetBoardReadiness();
+    }
     void vscode.commands.executeCommand('setContext', 'canmv.connected', connected);
     void vscode.commands.executeCommand('setContext', 'canmv.disconnected', disconnected);
     controlProvider?.setState({ connected, statusText: sidebarStatusText(state) });
     updateTerminalInputState();
+    updateExplorerConnectionState();
   };
   const setScriptRunningContext = (value: boolean) => {
+    const wasRunning = scriptRunning;
     scriptRunning = value;
+    if (wasRunning && !value) {
+      pauseRemoteFiles(1500);
+    }
     void vscode.commands.executeCommand('setContext', 'canmv.scriptRunning', value);
     previewPanel?.sendScriptRunning(value);
     controlProvider?.setState({ scriptRunning: value });
     updateTerminalInputState();
+    updateExplorerConnectionState();
+    if (!value) {
+      refreshExplorerSoon(250);
+    }
     onScriptRunningContextChanged();
   };
   const boardStatusText = (info: BoardInfo) => {
@@ -140,11 +237,51 @@ export function activate(context: vscode.ExtensionContext) {
   const assumeScriptRunningForPreview = () => {
     return scriptRunning || !boardHasCapabilitiesProtocol();
   };
+  remoteFilesAvailable = () => {
+    return connected
+      && boardReady
+      && !connectionBusy
+      && !scriptBusy
+      && Date.now() >= remoteFilesPausedUntil
+      && boardSupportsFileExplorer();
+  };
+  remoteFilesUnavailableMessage = () => {
+    if (!connected) return t('Not connected');
+    if (!boardReady) return t('Board is not ready yet');
+    if (connectionBusy || scriptBusy) return t('CanMV operation is in progress');
+    if (Date.now() < remoteFilesPausedUntil) return t('CanMV operation is in progress');
+    return t('File explorer is not supported by this firmware');
+  };
+  pauseRemoteFiles = (durationMs: number) => {
+    remoteFilesPausedUntil = Math.max(remoteFilesPausedUntil, Date.now() + durationMs);
+    updateExplorerConnectionState();
+    if (remoteFilesPauseTimer) {
+      clearTimeout(remoteFilesPauseTimer);
+    }
+    const remainingMs = Math.max(0, remoteFilesPausedUntil - Date.now());
+    remoteFilesPauseTimer = setTimeout(() => {
+      remoteFilesPauseTimer = undefined;
+      updateExplorerConnectionState();
+      refreshExplorerSoon(100);
+    }, remainingMs);
+  };
+  const explorerCanBrowse = () => remoteFilesAvailable();
+  updateExplorerConnectionState = () => {
+    const filesAvailable = remoteFilesAvailable();
+    void vscode.commands.executeCommand('setContext', 'canmv.remoteFilesAvailable', filesAvailable);
+    const activeExplorer = explorer;
+    if (!activeExplorer) return;
+    activeExplorer.setConnectionState(filesAvailable, !connected || boardSupportsFileExplorer(), remoteFilesUnavailableMessage());
+  };
   const updateTerminalInputState = () => {
     const replInputSupported = boardSupportsReplInput();
-    const canInput = connected && replInputSupported && !scriptRunning;
+    const canInput = connected && boardReady && replInputSupported && !scriptRunning && !connectionBusy && !scriptBusy;
     const reason = disconnected
       ? t('Connect board to use REPL input')
+      : connectionBusy || scriptBusy
+        ? t('CanMV operation is in progress')
+      : !boardReady
+        ? t('Board is not ready yet')
       : !replInputSupported
         ? t('REPL input is not supported by this firmware')
         : scriptRunning
@@ -154,11 +291,16 @@ export function activate(context: vscode.ExtensionContext) {
   };
   setConnectionContexts(session.state);
   setScriptRunningContext(false);
+  setConnectionBusyContext(false);
+  setScriptBusyContext(false);
+  setBoardReadyContext(false);
 
   // Preview is created lazily via ToolHost, not at activation
   let previewManuallyStopped = false;
   let previewPausedForScript = false;
   let previewAutoStartInFlight = false;
+  let previewAutoStartPromise: Promise<void> | undefined;
+  let previewAutoStartToken = 0;
   let previewAutoRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let previewAutoRetryCount = 0;
   let previewWatchdogTimer: ReturnType<typeof setInterval> | undefined;
@@ -298,6 +440,7 @@ export function activate(context: vscode.ExtensionContext) {
     updatePreviewWatchdog();
     updateVirtualTouchRefreshTimer();
     if (!scriptRunning) {
+      cancelPreviewAutoStart();
       clearVirtualTouchState();
     }
   };
@@ -335,7 +478,7 @@ export function activate(context: vscode.ExtensionContext) {
             }
           });
         }
-        clearPreviewAutoRetry();
+        cancelPreviewAutoStart();
         previewPanel = undefined;
         updateVirtualTouchRefreshTimer();
         clearVirtualTouchState();
@@ -468,6 +611,19 @@ export function activate(context: vscode.ExtensionContext) {
     }
   };
 
+  const cancelPreviewAutoStart = () => {
+    clearPreviewAutoRetry();
+    previewAutoRetryCount = 0;
+    previewAutoStartToken++;
+  };
+
+  const waitForPreviewAutoStart = async () => {
+    const inFlight = previewAutoStartPromise;
+    if (inFlight) {
+      await inFlight;
+    }
+  };
+
   const clearPreviewWatchdog = () => {
     if (previewWatchdogTimer) {
       clearInterval(previewWatchdogTimer);
@@ -487,6 +643,7 @@ export function activate(context: vscode.ExtensionContext) {
     try {
       const ageText = age === null || age === undefined ? 'startup' : `${age}ms`;
       logWarn('Preview', `No frames received for ${ageText}; restarting preview`);
+      cancelPreviewAutoStart();
       await stopPreviewRuntime();
       if (!previewManuallyStopped && !previewPausedForScript && scriptRunning) {
         previewAutoRetryCount = 0;
@@ -510,20 +667,27 @@ export function activate(context: vscode.ExtensionContext) {
     }
   };
 
-  const schedulePreviewAuto = (delayMs = 0) => {
-    if (previewManuallyStopped || previewPausedForScript || !scriptRunning || session.state !== 'connected') {
+  const schedulePreviewAuto = (delayMs = 0, options: { allowWhileScriptBusy?: boolean } = {}) => {
+    if (previewManuallyStopped || previewPausedForScript || !scriptRunning || connectionBusy || (scriptBusy && !options.allowWhileScriptBusy) || session.state !== 'connected') {
       return;
     }
+    const token = previewAutoStartToken;
     clearPreviewAutoRetry();
     previewAutoRetryTimer = setTimeout(() => {
       previewAutoRetryTimer = undefined;
-      void startPreviewAuto();
+      const promise = startPreviewAuto(token);
+      previewAutoStartPromise = promise;
+      void promise.finally(() => {
+        if (previewAutoStartPromise === promise) {
+          previewAutoStartPromise = undefined;
+        }
+      });
     }, delayMs);
   };
 
-  const startPreviewAuto = async () => {
-    if (previewManuallyStopped || previewPausedForScript || session.state !== 'connected') {
-      logDebug('Preview', `Auto-start skipped: manualStop=${previewManuallyStopped} paused=${previewPausedForScript} scriptRun=${scriptRunning} state=${session.state}`);
+  const startPreviewAuto = async (token = previewAutoStartToken) => {
+    if (token !== previewAutoStartToken || previewManuallyStopped || previewPausedForScript || connectionBusy || scriptBusy || session.state !== 'connected') {
+      logDebug('Preview', `Auto-start skipped: token=${token === previewAutoStartToken ? 'current' : 'stale'} manualStop=${previewManuallyStopped} paused=${previewPausedForScript} scriptRun=${scriptRunning} state=${session.state}`);
       return;
     }
     if (!scriptRunning) {
@@ -538,7 +702,18 @@ export function activate(context: vscode.ExtensionContext) {
     logInfo('Preview', 'Auto-starting');
     try {
       ensurePreviewPanel();
-      const started = await getVideoService()?.startPreview(undefined, undefined, { assumeScriptRunning: assumeScriptRunningForPreview() });
+      if (token !== previewAutoStartToken || previewPausedForScript || !scriptRunning || connectionBusy || scriptBusy || session.state !== 'connected') {
+        logDebug('Preview', 'Auto-start canceled before request');
+        return;
+      }
+      const started = await getVideoService()?.startPreview(undefined, undefined, { assumeScriptRunning: assumeScriptRunningForPreview(), suppressErrors: true });
+      if (token !== previewAutoStartToken || previewPausedForScript || !scriptRunning || connectionBusy || scriptBusy) {
+        logDebug('Preview', 'Auto-start result discarded after script state changed');
+        if (started) {
+          await stopPreviewRuntime();
+        }
+        return;
+      }
       if (started) {
         previewAutoRetryCount = 0;
         logInfo('Preview', 'Auto-started');
@@ -546,7 +721,7 @@ export function activate(context: vscode.ExtensionContext) {
         updateVirtualTouchRefreshTimer();
         return;
       }
-      if (!previewManuallyStopped && !previewPausedForScript && scriptRunning && session.state === 'connected') {
+      if (token === previewAutoStartToken && !previewManuallyStopped && !previewPausedForScript && !connectionBusy && !scriptBusy && scriptRunning && session.state === 'connected') {
         const delays = [500, 1000, 2000, 3000, 3000];
         const delay = delays[Math.min(previewAutoRetryCount, delays.length - 1)];
         previewAutoRetryCount++;
@@ -561,8 +736,8 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   const startPreviewManual = async () => {
-    clearPreviewAutoRetry();
-    previewAutoRetryCount = 0;
+    cancelPreviewAutoStart();
+    await waitForPreviewAutoStart();
     previewManuallyStopped = false;
     previewPausedForScript = false;
     previewPanel?.sendPreviewDisabled(false);
@@ -591,10 +766,10 @@ export function activate(context: vscode.ExtensionContext) {
   }
 
   const stopPreviewManual = async () => {
-    clearPreviewAutoRetry();
-    previewAutoRetryCount = 0;
+    cancelPreviewAutoStart();
     previewManuallyStopped = true;
     previewPausedForScript = false;
+    await waitForPreviewAutoStart();
     previewPanel?.sendPreviewDisabled(true);
     await stopPreviewRuntime();
     clearVirtualTouchState();
@@ -609,6 +784,8 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   const stopPreviewBeforeScript = async () => {
+    cancelPreviewAutoStart();
+    await waitForPreviewAutoStart();
     if (session.state === 'streaming') {
       previewPausedForScript = true;
       await stopPreviewRuntime();
@@ -616,9 +793,10 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   const startPreviewForScript = () => {
+    previewAutoStartToken++;
     previewPausedForScript = false;
     previewAutoRetryCount = 0;
-    schedulePreviewAuto(1500);
+    schedulePreviewAuto(1500, { allowWhileScriptBusy: true });
   };
 
   const showTerminalView = () => {
@@ -631,33 +809,45 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   const stopPreviewAfterScript = async () => {
-    clearPreviewAutoRetry();
-    previewAutoRetryCount = 0;
+    cancelPreviewAutoStart();
+    await waitForPreviewAutoStart();
     previewPausedForScript = false;
     await stopPreviewRuntime();
     clearVirtualTouchState();
   };
 
-  const stopRunningScript = async (options: { stopPreview: boolean }) => {
+  const stopRunningScript = async (options: { stopPreview: boolean; allowWhileConnectionBusy?: boolean }) => {
     if (!connected && !scriptRunning) return;
-    const result = await session.request(createRequest(Methods.stopScript, {}));
-    if (isResponse(result)) {
-      const payload = result.result as { output?: string };
-      if (payload.output) {
-        appendTerminal(payload.output);
+    if (!beginScriptOperation({ allowWhileConnectionBusy: options.allowWhileConnectionBusy, skipCooldown: options.allowWhileConnectionBusy })) return;
+    try {
+      cancelPreviewAutoStart();
+      if (options.stopPreview) {
+        previewPausedForScript = true;
+        await waitForPreviewAutoStart();
+        await stopPreviewRuntime();
+        clearVirtualTouchState();
       }
-      vscode.window.showInformationMessage(t('CanMV: Script stopped.'));
-    } else {
-      logError('Script', `Stop failed: ${result.error.message}`);
-      appendTerminalLine(`[CanMV] ${result.error.message}`);
-      vscode.window.showErrorMessage(t('CanMV: Failed to stop script - {message}', { message: result.error.message }));
+      const result = await session.request(createRequest(Methods.stopScript, {}));
+      if (isResponse(result)) {
+        const payload = result.result as { output?: string };
+        if (payload.output) {
+          appendTerminal(payload.output);
+        }
+        vscode.window.showInformationMessage(t('CanMV: Script stopped.'));
+      } else {
+        logError('Script', `Stop failed: ${result.error.message}`);
+        appendTerminalLine(`[CanMV] ${result.error.message}`);
+        vscode.window.showErrorMessage(t('CanMV: Failed to stop script - {message}', { message: result.error.message }));
+      }
+      setScriptRunningContext(false);
+      if (options.stopPreview) {
+        await stopPreviewAfterScript();
+      }
+      refreshExplorerSoon(300);
+      refreshExplorerSoon(1200);
+    } finally {
+      endScriptOperation();
     }
-    setScriptRunningContext(false);
-    if (options.stopPreview) {
-      await stopPreviewAfterScript();
-    }
-    refreshExplorerSoon(300);
-    refreshExplorerSoon(1200);
   };
 
   const showScriptAlreadyRunning = () => {
@@ -672,6 +862,10 @@ export function activate(context: vscode.ExtensionContext) {
 
   const ensureCanStartScript = async (): Promise<boolean> => {
     if (!connected) return false;
+    if (!boardReady) {
+      vscode.window.showWarningMessage(t('CanMV: Board is not ready yet. Wait for initialization to finish.'));
+      return false;
+    }
     if (scriptRunning) {
       showScriptAlreadyRunning();
       return false;
@@ -695,26 +889,34 @@ export function activate(context: vscode.ExtensionContext) {
     return true;
   };
 
-  const runRemotePath = async (path: string): Promise<boolean> => {
+  const runRemotePathLocked = async (path: string): Promise<boolean> => {
     if (!(await ensureCanStartScript())) return false;
     await stopPreviewBeforeScript();
     logInfo('Script', `Run remote file: ${path}`);
-    setScriptRunningContext(true);
     try {
       const result = await fileService.fileExec(path);
       if (result.status !== 'started') {
-        setScriptRunningContext(false);
         if (result.message) {
           vscode.window.showWarningMessage(t('CanMV: {message}', { message: result.message }));
         }
         return false;
       }
+      setScriptRunningContext(true);
       startPreviewForScript();
       showScriptViews();
       return true;
     } catch (err) {
       setScriptRunningContext(false);
       throw err;
+    }
+  };
+
+  const runRemotePath = async (path: string): Promise<boolean> => {
+    if (!beginScriptOperation()) return false;
+    try {
+      return await runRemotePathLocked(path);
+    } finally {
+      endScriptOperation();
     }
   };
 
@@ -813,30 +1015,51 @@ export function activate(context: vscode.ExtensionContext) {
     },
   });
 
-  const refreshExplorer = () => {
-    fileService.clearCache();
-    explorer.refresh();
+  const ensureRemoteFilesAvailable = () => {
+    if (remoteFilesAvailable()) return true;
+    vscode.window.showWarningMessage(t('CanMV: {message}', { message: remoteFilesUnavailableMessage() }));
+    return false;
   };
 
-  const refreshExplorerSoon = (delayMs = 250) => {
-    setTimeout(() => {
-      if (connected) {
-        refreshExplorer();
-      }
+  const refreshExplorer = () => {
+    if (!explorerCanBrowse()) {
+      updateExplorerConnectionState();
+      return;
+    }
+    fileService.clearCache();
+    explorer?.refresh();
+  };
+
+  refreshExplorerSoon = (delayMs = 250) => {
+    if (explorerRefreshTimer) {
+      clearTimeout(explorerRefreshTimer);
+    }
+    explorerRefreshTimer = setTimeout(() => {
+      explorerRefreshTimer = undefined;
+      refreshExplorer();
     }, delayMs);
   };
 
   // Register read-only remote file system provider
-  const fsProvider = new CanmvFileSystemProvider(fileService);
+  const fsProvider = new CanmvFileSystemProvider(fileService, {
+    isAvailable: () => remoteFilesAvailable(),
+    unavailableMessage: () => remoteFilesUnavailableMessage(),
+  });
   context.subscriptions.push(
     vscode.workspace.registerFileSystemProvider('canmv', fsProvider)
   );
 
-  const explorer = new CanmvExplorer({
-    listDir: (path: string) => fileService.listDir(path),
+  const canmvExplorer = new CanmvExplorer({
+    listDir: async (path: string) => {
+      if (!explorerCanBrowse()) {
+        return [];
+      }
+      return fileService.listDir(path);
+    },
   });
+  explorer = canmvExplorer;
   const treeView = vscode.window.createTreeView('canmv.explorer', {
-    treeDataProvider: explorer,
+    treeDataProvider: canmvExplorer,
     showCollapseAll: true,
   });
   context.subscriptions.push(treeView);
@@ -859,6 +1082,8 @@ export function activate(context: vscode.ExtensionContext) {
   controlProvider.setState({
     connected,
     scriptRunning,
+    boardReady,
+    connectionPhase,
     statusText: sidebarStatusText(session.state),
   });
   const toolboxProvider = new ToolboxTreeProvider(registry);
@@ -883,7 +1108,7 @@ export function activate(context: vscode.ExtensionContext) {
       return;
     }
     const terminalCanSend = session.state === 'connected' || session.state === 'streaming';
-    if (!terminalCanSend || scriptRunning) {
+    if (!terminalCanSend || !boardReady || connectionBusy || scriptBusy || scriptRunning) {
       updateTerminalInputState();
       return;
     }
@@ -916,55 +1141,82 @@ export function activate(context: vscode.ExtensionContext) {
   // Register commands
   disposables = [
     vscode.commands.registerCommand('canmv.connectBoard', async () => {
-      if (!disconnected) return;
-      fileService.clearCache();
-      const repl = await boardService.connectBoard();
-      const info = boardService.boardInfo();
-      boardReady = false;
-      if (info) {
-        explorer.setConnectionState(true, boardSupportsFileExplorer());
-        updateBoardStatus();
-        previewPanel?.sendBoardInfo(info);
+      if (!disconnected || connectionBusy || scriptBusy) return;
+      setConnectionPhase('connecting');
+      setConnectionBusyContext(true);
+      cancelPreviewAutoStart();
+      resetBoardReadiness();
+      try {
+        fileService.clearCache();
+        const repl = await boardService.connectBoard();
+        const info = boardService.boardInfo();
+        if (info) {
+          setBoardReadyContext(pendingBoardReadyEvent || !boardHasCapabilitiesProtocol());
+          updateExplorerConnectionState();
+          updateBoardStatus();
+          previewPanel?.sendBoardInfo(info);
+        } else {
+          setBoardReadyContext(false);
+        }
+        if (repl) {
+          appendTerminal(repl);
+        }
+        updateTerminalInputState();
+      } finally {
+        setConnectionBusyContext(false);
+        setConnectionPhase('idle');
       }
-      if (repl) {
-        appendTerminal(repl);
-      }
-      updateTerminalInputState();
     }),
     vscode.commands.registerCommand('canmv.disconnectBoard', async () => {
-      if (!connected) return;
-      clearPreviewAutoRetry();
-      previewAutoRetryCount = 0;
-      previewPausedForScript = false;
-      clearVirtualTouchState();
-      updateVirtualTouchRefreshTimer();
-      if (scriptRunning) {
-        await stopRunningScript({ stopPreview: true });
+      if (!connected || connectionBusy || scriptBusy) return;
+      setConnectionPhase('disconnecting');
+      setConnectionBusyContext(true);
+      try {
+        cancelPreviewAutoStart();
+        previewPausedForScript = false;
+        clearVirtualTouchState();
+        updateVirtualTouchRefreshTimer();
+        if (scriptRunning) {
+          await stopRunningScript({ stopPreview: true, allowWhileConnectionBusy: true });
+        }
+        videoService?.clearPreviewState();
+        resetBoardReadiness();
+        fileService.clearCache();
+        await boardService.disconnectBoard();
+        statusItem.text = '$(debug-disconnect) CanMV';
+        statusItem.tooltip = states.disconnected();
+        updateTerminalInputState();
+        appendTerminalLine(t('[CanMV] Disconnected'));
+      } finally {
+        setConnectionBusyContext(false);
+        setConnectionPhase('idle');
       }
-      videoService?.clearPreviewState();
-      boardReady = false;
-      fileService.clearCache();
-      await boardService.disconnectBoard();
-      statusItem.text = '$(debug-disconnect) CanMV';
-      statusItem.tooltip = states.disconnected();
-      updateTerminalInputState();
-      appendTerminalLine(t('[CanMV] Disconnected'));
     }),
     vscode.commands.registerCommand('canmv.runCurrentScript', async () => {
-      if (!(await ensureCanStartScript())) return;
-      await stopPreviewBeforeScript();
-      setScriptRunningContext(true);
-      const started = await scriptService.runCurrentScript();
-      if (!started) {
-        setScriptRunningContext(false);
-      }
-      if (started) {
-        startPreviewForScript();
-        showScriptViews();
+      if (!beginScriptOperation()) return;
+      let started = false;
+      try {
+        if (!(await ensureCanStartScript())) return;
+        await stopPreviewBeforeScript();
+        started = await scriptService.runCurrentScript();
+        if (!started) {
+          setScriptRunningContext(false);
+        } else {
+          setScriptRunningContext(true);
+          startPreviewForScript();
+          showScriptViews();
+        }
+      } catch (err) {
+        if (!started) {
+          setScriptRunningContext(false);
+        }
+        throw err;
+      } finally {
+        endScriptOperation();
       }
     }),
     vscode.commands.registerCommand('canmv.stopScript', async () => {
-      if (!connected || !scriptRunning) return;
+      if (!connected || !scriptRunning || scriptBusy || connectionBusy) return;
       await stopRunningScript({ stopPreview: true });
     }),
     vscode.commands.registerCommand('canmv.startPreview', async () => {
@@ -981,6 +1233,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canmv.openRemoteFile', async (arg?: vscode.Uri | FileTreeItem) => {
       const path = remotePathFromCommandArg(arg);
       if (!path) return;
+      if (!ensureRemoteFilesAvailable()) return;
       try {
         await remoteMirrorService.openRemoteFile(path);
       } catch (err) {
@@ -988,43 +1241,54 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
     vscode.commands.registerCommand('canmv.runOnK230', async () => {
-      if (!(await ensureCanStartScript())) return;
-      const editor = vscode.window.activeTextEditor;
-      if (!editor) return;
-      const uri = editor.document.uri;
-      const mirroredRemotePath = remoteMirrorService.remotePathForDocument(editor.document);
-      if (uri.scheme === 'canmv') {
-        if (editor.document.isDirty) await editor.document.save();
-        await runRemotePath(uri.path);
-        return;
-      } else if (mirroredRemotePath) {
-        if (editor.document.isDirty) await editor.document.save();
-        await remoteMirrorService.syncDocumentToRemote(editor.document);
-        await runRemotePath(mirroredRemotePath);
-        return;
-      } else {
-        await stopPreviewBeforeScript();
-        setScriptRunningContext(true);
-        const script = editor.document.getText();
-        logInfo('Script', `Run active file on K230: ${uri.fsPath} (${script.length}B)`);
-        const req = createRequest(Methods.runScript, { script });
-        const result = await session.request(req);
-        if (!isResponse(result)) {
-          setScriptRunningContext(false);
-          vscode.window.showErrorMessage(t('CanMV: {message}', { message: result.error.message }));
-        } else if ((result.result as { status?: string }).status !== 'ok') {
-          const payload = result.result as { message?: string; output?: string };
-          setScriptRunningContext(false);
-          vscode.window.showWarningMessage(t('CanMV: {message}', { message: payload.message || payload.output || t('Script did not start') }));
+      if (!beginScriptOperation()) return;
+      let started = false;
+      try {
+        if (!(await ensureCanStartScript())) return;
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) return;
+        const uri = editor.document.uri;
+        const mirroredRemotePath = remoteMirrorService.remotePathForDocument(editor.document);
+        if (uri.scheme === 'canmv') {
+          if (editor.document.isDirty) await editor.document.save();
+          started = await runRemotePathLocked(uri.path);
+          return;
+        } else if (mirroredRemotePath) {
+          if (editor.document.isDirty) await editor.document.save();
+          await remoteMirrorService.syncDocumentToRemote(editor.document);
+          started = await runRemotePathLocked(mirroredRemotePath);
+          return;
         } else {
-          startPreviewForScript();
-          showScriptViews();
+          await stopPreviewBeforeScript();
+          const script = editor.document.getText();
+          logInfo('Script', `Run active file on K230: ${uri.fsPath} (${script.length}B)`);
+          const req = createRequest(Methods.runScript, { script });
+          const result = await session.request(req);
+          if (!isResponse(result)) {
+            vscode.window.showErrorMessage(t('CanMV: {message}', { message: result.error.message }));
+          } else if ((result.result as { status?: string }).status !== 'ok') {
+            const payload = result.result as { message?: string; output?: string };
+            vscode.window.showWarningMessage(t('CanMV: {message}', { message: payload.message || payload.output || t('Script did not start') }));
+          } else {
+            started = true;
+            setScriptRunningContext(true);
+            startPreviewForScript();
+            showScriptViews();
+          }
         }
+      } catch (err) {
+        if (!started) {
+          setScriptRunningContext(false);
+        }
+        throw err;
+      } finally {
+        endScriptOperation();
       }
     }),
     vscode.commands.registerCommand('canmv.saveAsMainPy', async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
+      if (!ensureRemoteFilesAvailable()) return;
       const text = editor.document.getText();
       const data = new TextEncoder().encode(text);
       try {
@@ -1041,6 +1305,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canmv.saveAsBootPy', async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
+      if (!ensureRemoteFilesAvailable()) return;
       const text = editor.document.getText();
       const data = new TextEncoder().encode(text);
       try {
@@ -1070,13 +1335,14 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canmv.newRemoteFile', async (item?: FileTreeItem) => {
       item = item ?? selectedExplorerItem();
       if (!connected || !item || item.fileType !== 'directory') return;
+      if (!ensureRemoteFilesAvailable()) return;
       const name = await promptRemoteName(t('New file name'));
       if (!name) return;
       const path = childPath(item.absPath, name.trim());
       try {
         const ok = await fileService.writeFile(path, new Uint8Array());
         if (!ok) throw new Error(t('backend rejected the request'));
-        explorer.refresh();
+        refreshExplorer();
         await remoteMirrorService.openRemoteFile(path);
       } catch (err) {
         showRemoteOperationError(t('Create file'), err);
@@ -1085,13 +1351,14 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canmv.newRemoteFolder', async (item?: FileTreeItem) => {
       item = item ?? selectedExplorerItem();
       if (!connected || !item || item.fileType !== 'directory') return;
+      if (!ensureRemoteFilesAvailable()) return;
       const name = await promptRemoteName(t('New folder name'));
       if (!name) return;
       const path = childPath(item.absPath, name.trim());
       try {
         const ok = await fileService.mkdir(path);
         if (!ok) throw new Error(t('backend rejected the request'));
-        explorer.refresh();
+        refreshExplorer();
       } catch (err) {
         showRemoteOperationError(t('Create folder'), err);
       }
@@ -1099,6 +1366,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canmv.uploadFiles', async (item?: FileTreeItem) => {
       item = item ?? selectedExplorerItem();
       if (!connected || !item || item.fileType !== 'directory') return;
+      if (!ensureRemoteFilesAvailable()) return;
       const files = await vscode.window.showOpenDialog({
         canSelectFiles: true,
         canSelectFolders: false,
@@ -1117,7 +1385,7 @@ export function activate(context: vscode.ExtensionContext) {
             }
           }
         );
-        explorer.refresh();
+        refreshExplorer();
       } catch (err) {
         showRemoteOperationError(t('Upload files'), err);
       }
@@ -1125,6 +1393,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canmv.uploadFolder', async (item?: FileTreeItem) => {
       item = item ?? selectedExplorerItem();
       if (!connected || !item || item.fileType !== 'directory') return;
+      if (!ensureRemoteFilesAvailable()) return;
       const folders = await vscode.window.showOpenDialog({
         canSelectFiles: false,
         canSelectFolders: true,
@@ -1142,7 +1411,7 @@ export function activate(context: vscode.ExtensionContext) {
             await fileService.upload(folder.fsPath, remotePath);
           }
         );
-        explorer.refresh();
+        refreshExplorer();
       } catch (err) {
         showRemoteOperationError(t('Upload folder'), err);
       }
@@ -1150,6 +1419,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canmv.downloadRemoteItem', async (item?: FileTreeItem) => {
       item = item ?? selectedExplorerItem();
       if (!connected || !item || !item.absPath) return;
+      if (!ensureRemoteFilesAvailable()) return;
       const folders = await vscode.window.showOpenDialog({
         canSelectFiles: false,
         canSelectFolders: true,
@@ -1196,6 +1466,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canmv.renameRemoteItem', async (item?: FileTreeItem) => {
       item = item ?? selectedExplorerItem();
       if (!connected || !item || item.contextValue === 'mountRoot') return;
+      if (!ensureRemoteFilesAvailable()) return;
       const name = await promptRemoteName(t('New name'), item.name || '');
       if (!name || name.trim() === item.name) return;
       const parent = parentRemotePath(item.absPath);
@@ -1203,7 +1474,7 @@ export function activate(context: vscode.ExtensionContext) {
       try {
         const ok = await fileService.renameFile(item.absPath, newPath);
         if (!ok) throw new Error(t('backend rejected the request'));
-        explorer.refresh();
+        refreshExplorer();
       } catch (err) {
         showRemoteOperationError(t('Rename'), err);
       }
@@ -1211,6 +1482,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canmv.deleteRemoteItem', async (item?: FileTreeItem) => {
       item = item ?? selectedExplorerItem();
       if (!connected || !item || item.contextValue === 'mountRoot') return;
+      if (!ensureRemoteFilesAvailable()) return;
       const label = item.fileType === 'directory' ? t('folder') : t('file');
       const deleteAction = t('Delete');
       const confirmed = await vscode.window.showWarningMessage(
@@ -1224,7 +1496,7 @@ export function activate(context: vscode.ExtensionContext) {
           ? await fileService.rmdir(item.absPath)
           : await fileService.deleteFile(item.absPath);
         if (!ok) throw new Error(t('backend rejected the request'));
-        explorer.refresh();
+        refreshExplorer();
       } catch (err) {
         showRemoteOperationError(t('Delete'), err);
       }
@@ -1258,7 +1530,7 @@ export function activate(context: vscode.ExtensionContext) {
         });
       }
     } else if (event.event === 'boardReady') {
-      boardReady = !!boardService.boardInfo();
+      markBoardReadyEvent();
       if (boardReady) {
         logInfo('Board', 'Ready after connect soft reboot');
         void configureBoardStubs(session);
@@ -1269,10 +1541,9 @@ export function activate(context: vscode.ExtensionContext) {
       const params = event.params as { source?: string; message?: string };
       const detail = [params.source, params.message].filter(Boolean).join(': ');
       logWarn('Board', `Disconnected${detail ? ` (${detail})` : ''}`);
-      clearPreviewAutoRetry();
-      previewAutoRetryCount = 0;
+      cancelPreviewAutoStart();
       previewPausedForScript = false;
-      boardReady = false;
+      resetBoardReadiness();
       setScriptRunningContext(false);
       clearVirtualTouchState();
       updatePreviewWatchdog();
@@ -1290,16 +1561,16 @@ export function activate(context: vscode.ExtensionContext) {
   session.onStateChange((state) => {
     previewPanel?.sendState(state);
     const nextConnected = state === 'connected' || state === 'streaming';
-    explorer.setConnectionState(nextConnected, !nextConnected || boardSupportsFileExplorer());
     setConnectionContexts(state);
+    updateExplorerConnectionState();
     updatePreviewWatchdog();
     updateVirtualTouchRefreshTimer();
     if (state !== 'streaming') {
       clearVirtualTouchState();
     }
     if (!nextConnected) {
-      clearPreviewAutoRetry();
-      boardReady = false;
+      cancelPreviewAutoStart();
+      resetBoardReadiness();
       fileService.clearCache();
       setScriptRunningContext(false);
       previewPausedForScript = false;
@@ -1309,9 +1580,6 @@ export function activate(context: vscode.ExtensionContext) {
     }
     if (nextConnected) {
       updateBoardStatus();
-      if (state === 'connected') {
-        boardReady = false;
-      }
     } else {
       statusItem.text = '$(debug-disconnect) CanMV';
       statusItem.tooltip = states.disconnected();

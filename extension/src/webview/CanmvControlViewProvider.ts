@@ -4,6 +4,8 @@ import { states } from '../i18n';
 type ControlState = {
   connected: boolean;
   scriptRunning: boolean;
+  boardReady: boolean;
+  connectionPhase: 'idle' | 'connecting' | 'disconnecting';
   statusText: string;
 };
 
@@ -12,6 +14,8 @@ export class CanmvControlViewProvider implements vscode.WebviewViewProvider {
   private state: ControlState = {
     connected: false,
     scriptRunning: false,
+    boardReady: false,
+    connectionPhase: 'idle',
     statusText: states.disconnected(),
   };
 
@@ -149,13 +153,16 @@ export class CanmvControlViewProvider implements vscode.WebviewViewProvider {
     const l10n = ${jsonForScript({
       canmv: 'CanMV',
       canmvBoard: states.canmvBoard(),
+      connecting: states.connecting(),
+      disconnecting: states.disconnecting(),
+      preparing: states.preparing(),
       connected: states.connected(),
       disconnected: states.disconnected(),
       offline: states.offline(),
       ready: states.ready(),
       running: states.running(),
     })};
-    let state = { connected: false, scriptRunning: false, statusText: l10n.disconnected };
+    let state = { connected: false, scriptRunning: false, boardReady: false, connectionPhase: 'idle', statusText: l10n.disconnected };
 
     window.addEventListener('message', event => {
       const msg = event.data || {};
@@ -168,9 +175,17 @@ export class CanmvControlViewProvider implements vscode.WebviewViewProvider {
     function renderState() {
       statusTitle.textContent = state.connected ? l10n.canmvBoard : l10n.canmv;
       statusText.textContent = state.statusText || (state.connected ? l10n.connected : l10n.disconnected);
-      statusBadge.textContent = state.scriptRunning ? l10n.running : (state.connected ? l10n.ready : l10n.offline);
+      statusBadge.textContent = badgeText();
       statusBadge.classList.toggle('idle', !state.connected || !state.scriptRunning);
       statusDot.classList.toggle('connected', !!state.connected);
+    }
+
+    function badgeText() {
+      if (state.connectionPhase === 'disconnecting') return l10n.disconnecting;
+      if (state.connectionPhase === 'connecting') return l10n.connecting;
+      if (state.scriptRunning) return l10n.running;
+      if (state.connected) return state.boardReady ? l10n.ready : l10n.preparing;
+      return l10n.offline;
     }
 
     renderState();

@@ -4,16 +4,28 @@ import { t } from '../i18n';
 
 const WRITABLE_ROOTS = new Set(['sdcard', 'data', 'udisk']);
 
+interface AvailabilityCallbacks {
+  isAvailable(): boolean;
+  unavailableMessage(): string;
+}
+
 export class CanmvFileSystemProvider implements vscode.FileSystemProvider {
   private _emitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
   readonly onDidChangeFile = this._emitter.event;
 
-  constructor(private fileService: FileService) {}
+  constructor(
+    private fileService: FileService,
+    private availability: AvailabilityCallbacks = {
+      isAvailable: () => true,
+      unavailableMessage: () => t('Remote files are not available'),
+    },
+  ) {}
 
   async stat(uri: vscode.Uri): Promise<vscode.FileStat> {
     if (uri.path === '/') {
       return { type: vscode.FileType.Directory, ctime: 0, mtime: 0, size: 0 };
     }
+    this.assertAvailable();
 
     const entry = await this.findEntry(uri);
     if (entry) {
@@ -46,6 +58,7 @@ export class CanmvFileSystemProvider implements vscode.FileSystemProvider {
   }
 
   async readFile(uri: vscode.Uri): Promise<Uint8Array> {
+    this.assertAvailable();
     try {
       return await this.fileService.readFile(uri.path);
     } catch (err) {
@@ -58,6 +71,7 @@ export class CanmvFileSystemProvider implements vscode.FileSystemProvider {
     content: Uint8Array,
     options: { readonly create: boolean; readonly overwrite: boolean }
   ): Promise<void> {
+    this.assertAvailable();
     this.assertWritablePath(uri);
     const exists = await this.exists(uri);
     if (exists && !options.overwrite) {
@@ -79,6 +93,7 @@ export class CanmvFileSystemProvider implements vscode.FileSystemProvider {
     newUri: vscode.Uri,
     options: { readonly overwrite: boolean }
   ): Promise<void> {
+    this.assertAvailable();
     this.assertWritablePath(oldUri);
     this.assertWritablePath(newUri);
     if (!(await this.exists(oldUri))) {
@@ -105,6 +120,7 @@ export class CanmvFileSystemProvider implements vscode.FileSystemProvider {
   }
 
   async delete(uri: vscode.Uri, options: { readonly recursive: boolean }): Promise<void> {
+    this.assertAvailable();
     this.assertWritablePath(uri);
     const stat = await this.stat(uri);
     if (stat.type === vscode.FileType.Directory && !options.recursive) {
@@ -123,6 +139,7 @@ export class CanmvFileSystemProvider implements vscode.FileSystemProvider {
   }
 
   async createDirectory(uri: vscode.Uri): Promise<void> {
+    this.assertAvailable();
     this.assertWritablePath(uri);
     const ok = await this.fileService.mkdir(uri.path);
     if (!ok) {
@@ -141,12 +158,19 @@ export class CanmvFileSystemProvider implements vscode.FileSystemProvider {
     }
   }
 
+  private assertAvailable(): void {
+    if (!this.availability.isAvailable()) {
+      throw vscode.FileSystemError.Unavailable(this.availability.unavailableMessage());
+    }
+  }
+
   private isWritablePath(path: string): boolean {
     const parts = path.split('/').filter(Boolean);
     return parts.length > 1 && WRITABLE_ROOTS.has(parts[0]);
   }
 
   private async listDir(path: string): Promise<FileEntry[]> {
+    this.assertAvailable();
     try {
       return await this.fileService.listDir(path);
     } catch {

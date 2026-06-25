@@ -5,6 +5,8 @@ export const t = vscode.l10n.t;
 export const states = {
   disconnected: () => t('Disconnected'),
   connecting: () => t('Connecting...'),
+  disconnecting: () => t('Disconnecting...'),
+  preparing: () => t('Preparing...'),
   connected: () => t('Connected'),
   streaming: () => t('Streaming'),
   offline: () => t('Offline'),
@@ -28,6 +30,8 @@ export function webviewStrings() {
   return {
     stateDisconnected: states.disconnected(),
     stateConnecting: states.connecting(),
+    stateDisconnecting: states.disconnecting(),
+    statePreparing: states.preparing(),
     stateConnected: states.connected(),
     stateStreaming: states.streaming(),
     stateOffline: states.offline(),

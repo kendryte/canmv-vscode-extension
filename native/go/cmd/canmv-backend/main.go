@@ -155,14 +155,7 @@ func (s *server) handle(method string, params map[string]interface{}) (interface
 		s.cleanupBoard()
 		return map[string]string{}, 0, ""
 	case "scriptRunning":
-		if s.board == nil {
-			return map[string]bool{"running": false}, 0, ""
-		}
-		running, err := s.scriptRunning(s.board, false)
-		if err != nil {
-			return nil, 2003, err.Error()
-		}
-		return map[string]bool{"running": running}, 0, ""
+		return s.scriptRunningStatus()
 	case "runScript":
 		return s.runScript(params)
 	case "stopScript":
@@ -255,6 +248,9 @@ func (s *server) connectBoard(params map[string]interface{}) (interface{}, int, 
 }
 
 func (s *server) getFirmwareCommit() (interface{}, int, string) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
 	board := s.currentBoard()
 	if board == nil {
 		return map[string]string{"commitId": "", "fwVersion": "0.0.0", "archStr": ""}, 0, ""
@@ -271,8 +267,25 @@ func (s *server) getFirmwareCommit() (interface{}, int, string) {
 	}, 0, ""
 }
 
+func (s *server) scriptRunningStatus() (interface{}, int, string) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	board := s.currentBoard()
+	if board == nil {
+		return map[string]bool{"running": false}, 0, ""
+	}
+	running, err := s.scriptRunning(board, false)
+	if err != nil {
+		return nil, 2003, err.Error()
+	}
+	return map[string]bool{"running": running}, 0, ""
+}
+
 func (s *server) runScript(params map[string]interface{}) (interface{}, int, string) {
 	s.beginUserOperation()
+	s.stopPreview()
+	s.stopPoller()
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 
@@ -280,14 +293,19 @@ func (s *server) runScript(params map[string]interface{}) (interface{}, int, str
 	if board == nil {
 		return map[string]string{"status": "error", "message": "Board not connected", "output": "Board not connected"}, 0, ""
 	}
-	s.stopPreview()
 	script := stringParam(params, "script", "")
 	if script == "" {
 		return map[string]string{"status": "error", "message": "Empty script", "output": "Empty script"}, 0, ""
 	}
-	s.stopPoller()
 	if !s.isCurrentBoard(board) {
 		return map[string]string{"status": "error", "message": "Board disconnected", "output": "Board disconnected"}, 0, ""
+	}
+	// Pre-flight health check: verify the board is responsive before
+	// attempting a soft reset. Avoids pushing an already-degraded board
+	// further into a bad state during rapid start/stop cycles.
+	if _, err := s.scriptRunning(board, false); err != nil {
+		s.startPoller(false)
+		return map[string]string{"status": "error", "message": "Board communication error; try again shortly", "output": err.Error()}, 0, ""
 	}
 	_ = s.softResetBoard(board)
 	if data := s.drainBoardFor(board, 800*time.Millisecond, 25*time.Millisecond, 120*time.Millisecond); len(data) > 0 {
@@ -316,6 +334,8 @@ func (s *server) runScript(params map[string]interface{}) (interface{}, int, str
 
 func (s *server) stopScript() (interface{}, int, string) {
 	s.beginUserOperation()
+	s.stopPreview()
+	s.stopPoller()
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 
@@ -323,7 +343,6 @@ func (s *server) stopScript() (interface{}, int, string) {
 	if board == nil {
 		return map[string]string{}, 0, ""
 	}
-	s.stopPoller()
 	data := s.stopScriptAndDrain(board, 2*time.Second, true)
 	s.startPoller(false)
 	if len(data) > 0 {
@@ -333,7 +352,11 @@ func (s *server) stopScript() (interface{}, int, string) {
 }
 
 func (s *server) terminalInput(params map[string]interface{}) (interface{}, int, string) {
-	if s.board == nil {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	board := s.currentBoard()
+	if board == nil {
 		return map[string]string{"status": "error", "message": "Board not connected"}, 0, ""
 	}
 	if !s.hasCapability(usbdbg.CapReplInput) {
@@ -343,20 +366,24 @@ func (s *server) terminalInput(params map[string]interface{}) (interface{}, int,
 	if text == "" {
 		return map[string]string{"status": "ok"}, 0, ""
 	}
-	if err := s.currentProtocol().TerminalInput(s.board, text); err != nil {
+	if err := s.currentProtocol().TerminalInput(board, text); err != nil {
 		return map[string]string{"status": "error", "message": err.Error()}, 0, ""
 	}
 	return map[string]string{"status": "ok"}, 0, ""
 }
 
 func (s *server) virtualTouchStatus() (interface{}, int, string) {
-	if s.board == nil {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	board := s.currentBoard()
+	if board == nil {
 		return virtualTouchStatusResult(usbdbg.VirtualTouchStatus{}), 0, ""
 	}
 	if !s.hasCapability(usbdbg.CapVirtualTouch) {
 		return virtualTouchStatusResult(usbdbg.VirtualTouchStatus{}), 0, ""
 	}
-	status, err := s.currentProtocol().VirtualTouchStatus(s.board)
+	status, err := s.currentProtocol().VirtualTouchStatus(board)
 	if err != nil {
 		s.setVirtualTouchStatus(usbdbg.VirtualTouchStatus{})
 		return virtualTouchStatusResult(usbdbg.VirtualTouchStatus{}), 0, ""
@@ -366,9 +393,6 @@ func (s *server) virtualTouchStatus() (interface{}, int, string) {
 }
 
 func (s *server) virtualTouchEvent(params map[string]interface{}) (interface{}, int, string) {
-	if s.board == nil {
-		return map[string]bool{"accepted": false}, 0, ""
-	}
 	status := s.cachedVirtualTouchStatus()
 	if !status.Supported || !status.Enabled || status.RangeX == 0 || status.RangeY == 0 {
 		return map[string]bool{"accepted": false}, 0, ""
@@ -391,7 +415,18 @@ func (s *server) virtualTouchEvent(params map[string]interface{}) (interface{}, 
 	width := clampInt(intParam(params, "width", 1), 1, 65535)
 	timestampMS := uint32(time.Now().UnixMilli() & 0xffffffff)
 
-	err := s.currentProtocol().VirtualTouchEvent(s.board, usbdbg.VirtualTouchEvent{
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	board := s.currentBoard()
+	if board == nil {
+		return map[string]bool{"accepted": false}, 0, ""
+	}
+	if !s.hasCapability(usbdbg.CapVirtualTouch) {
+		return map[string]bool{"accepted": false}, 0, ""
+	}
+
+	err := s.currentProtocol().VirtualTouchEvent(board, usbdbg.VirtualTouchEvent{
 		X:           uint16(x),
 		Y:           uint16(y),
 		Event:       eventCode,
@@ -407,6 +442,8 @@ func (s *server) virtualTouchEvent(params map[string]interface{}) (interface{}, 
 
 func (s *server) fileExec(params map[string]interface{}) (interface{}, int, string) {
 	s.beginUserOperation()
+	s.stopPreview()
+	s.stopPoller()
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 
@@ -418,10 +455,13 @@ func (s *server) fileExec(params map[string]interface{}) (interface{}, int, stri
 		return map[string]string{"status": "error", "message": "File execution is not supported by this firmware"}, 0, ""
 	}
 	path := stringParam(params, "path", "")
-	s.stopPreview()
-	s.stopPoller()
 	if !s.isCurrentBoard(board) {
 		return map[string]string{"status": "error", "message": "Board disconnected"}, 0, ""
+	}
+	// Pre-flight health check before soft reset.
+	if _, err := s.scriptRunning(board, false); err != nil {
+		s.startPoller(false)
+		return map[string]string{"status": "error", "message": "Board communication error; try again shortly", "output": err.Error()}, 0, ""
 	}
 	_ = s.softResetBoard(board)
 	if data := s.drainBoardFor(board, 800*time.Millisecond, 25*time.Millisecond, 120*time.Millisecond); len(data) > 0 {
@@ -448,12 +488,17 @@ func (s *server) fileExec(params map[string]interface{}) (interface{}, int, stri
 }
 
 func (s *server) startPreview(params map[string]interface{}) (interface{}, int, string) {
-	if s.board == nil {
+	s.opMu.Lock()
+
+	board := s.currentBoard()
+	if board == nil {
+		s.opMu.Unlock()
 		return map[string]string{"status": "error", "message": "Board not connected"}, 0, ""
 	}
 	if s.currentProtocol().CheckRunningBeforePreview() {
-		running, err := s.scriptRunning(s.board, true)
+		running, err := s.scriptRunning(board, true)
 		if err == nil && !running {
+			s.opMu.Unlock()
 			s.stopPreview()
 			return map[string]string{"status": "error", "message": "No script is running"}, 0, ""
 		}
@@ -462,6 +507,7 @@ func (s *server) startPreview(params map[string]interface{}) (interface{}, int, 
 	alreadyRunning := s.previewStop != nil
 	s.previewMu.Unlock()
 	if alreadyRunning {
+		s.opMu.Unlock()
 		return map[string]string{"status": "started"}, 0, ""
 	}
 	fps := intParam(params, "fps", 30)
@@ -471,19 +517,25 @@ func (s *server) startPreview(params map[string]interface{}) (interface{}, int, 
 	if fps > 60 {
 		fps = 60
 	}
-	s.refreshFramebuffer()
-	s.startPreviewLoop(fps)
+	s.refreshFramebufferFor(board)
+	operationSeq := s.currentOperationSeq()
+	s.opMu.Unlock()
+	s.startPreviewLoop(fps, operationSeq)
 	return map[string]string{"status": "started"}, 0, ""
 }
 
 func (s *server) listDir(params map[string]interface{}) (interface{}, int, string) {
-	if s.board == nil {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	board := s.currentBoard()
+	if board == nil {
 		return map[string]interface{}{"entries": []usbdbg.FileEntry{}}, 0, ""
 	}
 	if !s.hasCapability(usbdbg.CapListDir) {
 		return nil, 4008, "File explorer is not supported by this firmware"
 	}
-	entries, err := s.currentProtocol().ListDir(s.board, stringParam(params, "path", "/"))
+	entries, err := s.currentProtocol().ListDir(board, stringParam(params, "path", "/"))
 	if err != nil {
 		return nil, 4003, err.Error()
 	}
@@ -491,13 +543,17 @@ func (s *server) listDir(params map[string]interface{}) (interface{}, int, strin
 }
 
 func (s *server) queryFileStat(params map[string]interface{}) (interface{}, int, string) {
-	if s.board == nil {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	board := s.currentBoard()
+	if board == nil {
 		return map[string]interface{}{"exists": false, "size": 0}, 0, ""
 	}
 	if !s.hasCapability(usbdbg.CapReadFile) {
 		return map[string]interface{}{"exists": false, "size": 0}, 0, ""
 	}
-	stat, err := s.currentProtocol().QueryFileStat(s.board, stringParam(params, "path", ""))
+	stat, err := s.currentProtocol().QueryFileStat(board, stringParam(params, "path", ""))
 	if err != nil {
 		return map[string]interface{}{"exists": false, "size": 0}, 0, ""
 	}
@@ -505,13 +561,17 @@ func (s *server) queryFileStat(params map[string]interface{}) (interface{}, int,
 }
 
 func (s *server) readFile(params map[string]interface{}) (interface{}, int, string) {
-	if s.board == nil {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	board := s.currentBoard()
+	if board == nil {
 		return map[string]string{"dataBase64": ""}, 0, ""
 	}
 	if !s.hasCapability(usbdbg.CapReadFile) {
 		return nil, 4008, "File read is not supported by this firmware"
 	}
-	data, err := s.currentProtocol().ReadFileAll(s.board, stringParam(params, "path", ""), 128*1024)
+	data, err := s.currentProtocol().ReadFileAll(board, stringParam(params, "path", ""), 128*1024)
 	if err != nil {
 		return nil, 4003, err.Error()
 	}
@@ -519,7 +579,11 @@ func (s *server) readFile(params map[string]interface{}) (interface{}, int, stri
 }
 
 func (s *server) writeFile(params map[string]interface{}) (interface{}, int, string) {
-	if s.board == nil {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	board := s.currentBoard()
+	if board == nil {
 		return map[string]interface{}{"success": false, "error": "Not connected"}, 0, ""
 	}
 	if !s.hasCapability(usbdbg.CapWriteFile) {
@@ -537,12 +601,16 @@ func (s *server) writeFile(params map[string]interface{}) (interface{}, int, str
 		}
 		data = decoded
 	}
-	errCode := s.currentProtocol().WriteFile(s.board, path, data, 128*1024)
+	errCode := s.currentProtocol().WriteFile(board, path, data, 128*1024)
 	return fileOpResult(errCode), 0, ""
 }
 
 func (s *server) simpleFileOp(params map[string]interface{}, opcode byte, key string) (interface{}, int, string) {
-	if s.board == nil {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	board := s.currentBoard()
+	if board == nil {
 		return map[string]interface{}{"success": false, "errorCode": invalidPathErr}, 0, ""
 	}
 	if !s.hasCapability(capabilityForSimpleFileOp(opcode)) {
@@ -552,12 +620,16 @@ func (s *server) simpleFileOp(params map[string]interface{}, opcode byte, key st
 	if !isWritablePath(path) {
 		return rejectProtectedPath(), 0, ""
 	}
-	errCode := s.currentProtocol().SimpleFileOp(s.board, opcode, append([]byte(path), 0))
+	errCode := s.currentProtocol().SimpleFileOp(board, opcode, append([]byte(path), 0))
 	return fileOpResult(errCode), 0, ""
 }
 
 func (s *server) renameFile(params map[string]interface{}) (interface{}, int, string) {
-	if s.board == nil {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	board := s.currentBoard()
+	if board == nil {
 		return map[string]interface{}{"success": false, "errorCode": invalidPathErr}, 0, ""
 	}
 	if !s.hasCapability(usbdbg.CapRenameFile) {
@@ -569,11 +641,11 @@ func (s *server) renameFile(params map[string]interface{}) (interface{}, int, st
 		return rejectProtectedPath(), 0, ""
 	}
 	payload := append(append([]byte(oldPath), 0), append([]byte(newPath), 0)...)
-	errCode := s.currentProtocol().SimpleFileOp(s.board, usbdbg.CmdRenameFile, payload)
+	errCode := s.currentProtocol().SimpleFileOp(board, usbdbg.CmdRenameFile, payload)
 	return fileOpResult(errCode), 0, ""
 }
 
-func (s *server) startPreviewLoop(fps int) {
+func (s *server) startPreviewLoop(fps int, operationSeq uint64) {
 	s.stopPreview()
 	stop := make(chan struct{})
 	done := make(chan struct{})
@@ -604,17 +676,29 @@ func (s *server) startPreviewLoop(fps int) {
 			if board == nil {
 				return
 			}
+			if !s.isWorkerCurrent(board, operationSeq) {
+				return
+			}
 			probeCount++
 			frameProbeStart := time.Now()
-			_, _, jpegSize, err := board.FrameSize()
+			var jpegSize uint32
+			var err error
+			if !s.withWorkerBoardOperation(stop, board, operationSeq, func() {
+				_, _, jpegSize, err = board.FrameSize()
+			}) {
+				return
+			}
 			if err != nil {
 				linkErrors++
-				if linkErrors >= 3 {
-					s.reportBoardDisconnected(board, "preview frame_size", err)
+				if linkErrors >= 6 {
+					s.reportWorkerBoardDisconnected(board, operationSeq, "preview frame_size", err)
 					return
 				}
 				if os.Getenv("CANMV_DEBUG_PREVIEW") == "1" && (probeCount == 1 || probeCount%500 == 0) {
-					running, _ := s.scriptRunning(board, true)
+					running := false
+					_ = s.withWorkerBoardOperation(stop, board, operationSeq, func() {
+						running, _ = s.scriptRunning(board, true)
+					})
 					_, _ = os.Stderr.WriteString("[canmv-backend] preview frame_size unavailable size=" + strconv.Itoa(int(jpegSize)) + " running=" + strconv.FormatBool(running) + " err=" + errorString(err) + "\n")
 				}
 				if !sleepPreviewUntil(stop, frameProbeStart.Add(interval)) {
@@ -626,7 +710,10 @@ func (s *server) startPreviewLoop(fps int) {
 			if jpegSize <= 100 {
 				noFrameCount++
 				if (debugPreview || validFrameCount == 0) && (noFrameCount == 1 || noFrameCount%90 == 0) {
-					running, _ := s.scriptRunning(board, true)
+					running := false
+					_ = s.withWorkerBoardOperation(stop, board, operationSeq, func() {
+						running, _ = s.scriptRunning(board, true)
+					})
 					_, _ = os.Stderr.WriteString("[canmv-backend] preview frame_size unavailable size=" + strconv.Itoa(int(jpegSize)) + " running=" + strconv.FormatBool(running) + " valid_frames=" + strconv.Itoa(validFrameCount) + "\n")
 				}
 				wakeAt := frameProbeStart.Add(interval)
@@ -636,7 +723,11 @@ func (s *server) startPreviewLoop(fps int) {
 					wakeAt = time.Now().Add(previewNoFrameRetryDelay)
 				}
 				if !fastRetry && (noFrameCount == 1 || noFrameCount%10 == 0) {
-					s.refreshFramebufferFor(board)
+					if !s.withWorkerBoardOperation(stop, board, operationSeq, func() {
+						s.refreshFramebufferFor(board)
+					}) {
+						return
+					}
 				}
 				if !sleepPreviewUntil(stop, wakeAt) {
 					return
@@ -651,11 +742,17 @@ func (s *server) startPreviewLoop(fps int) {
 			validFrameCount++
 			if validFrameCount%20 == 0 {
 				if s.supportsTxBuf() {
-					data, err := s.currentProtocol().DrainTxBuf(board)
+					var data []byte
+					var err error
+					if !s.withWorkerBoardOperation(stop, board, operationSeq, func() {
+						data, err = s.currentProtocol().DrainTxBuf(board)
+					}) {
+						return
+					}
 					if err != nil {
 						linkErrors++
-						if linkErrors >= 3 {
-							s.reportBoardDisconnected(board, "preview tx drain", err)
+						if linkErrors >= 6 {
+							s.reportWorkerBoardDisconnected(board, operationSeq, "preview tx drain", err)
 							return
 						}
 						if !sleepPreviewUntil(stop, frameProbeStart.Add(interval)) {
@@ -670,14 +767,23 @@ func (s *server) startPreviewLoop(fps int) {
 				}
 			}
 			if validFrameCount%10 == 0 {
-				s.refreshFramebufferFor(board)
+				if !s.withWorkerBoardOperation(stop, board, operationSeq, func() {
+					s.refreshFramebufferFor(board)
+				}) {
+					return
+				}
 			}
-			jpeg, err := board.FrameDump(jpegSize)
+			var jpeg []byte
+			if !s.withWorkerBoardOperation(stop, board, operationSeq, func() {
+				jpeg, err = board.FrameDump(jpegSize)
+			}) {
+				return
+			}
 			if err != nil || len(jpeg) < 4 || jpeg[0] != 0xff || jpeg[1] != 0xd8 {
 				if err != nil {
 					linkErrors++
-					if linkErrors >= 3 {
-						s.reportBoardDisconnected(board, "preview frame_dump", err)
+					if linkErrors >= 6 {
+						s.reportWorkerBoardDisconnected(board, operationSeq, "preview frame_dump", err)
 						return
 					}
 				}
@@ -777,6 +883,7 @@ func (s *server) startPoller(assumeRunning bool) {
 		return
 	}
 	s.stopPoller()
+	operationSeq := s.currentOperationSeq()
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	s.pollerMutex.Lock()
@@ -800,8 +907,17 @@ func (s *server) startPoller(assumeRunning bool) {
 			if board == nil {
 				return
 			}
+			if !s.isWorkerCurrent(board, operationSeq) {
+				return
+			}
 			if s.supportsTxBuf() {
-				data, err := s.currentProtocol().DrainTxBuf(board)
+				var data []byte
+				var err error
+				if !s.withWorkerBoardOperation(stop, board, operationSeq, func() {
+					data, err = s.currentProtocol().DrainTxBuf(board)
+				}) {
+					return
+				}
 				if err != nil {
 					if s.handleLegacyTxDrainError(board, err) {
 						linkErrors = 0
@@ -809,8 +925,8 @@ func (s *server) startPoller(assumeRunning bool) {
 						continue
 					}
 					linkErrors++
-					if linkErrors >= 3 {
-						s.reportBoardDisconnected(board, "poller tx drain", err)
+					if linkErrors >= 6 {
+						s.reportWorkerBoardDisconnected(board, operationSeq, "poller tx drain", err)
 						return
 					}
 					time.Sleep(50 * time.Millisecond)
@@ -824,7 +940,13 @@ func (s *server) startPoller(assumeRunning bool) {
 
 			shouldCheckRunning := wasRunning || assumeRunning || idleStatePoll <= 0
 			if shouldCheckRunning {
-				running, err := s.scriptRunning(board, wasRunning || assumeRunning)
+				var running bool
+				var err error
+				if !s.withWorkerBoardOperation(stop, board, operationSeq, func() {
+					running, err = s.scriptRunning(board, wasRunning || assumeRunning)
+				}) {
+					return
+				}
 				if err == nil {
 					linkErrors = 0
 					if running {
@@ -836,7 +958,7 @@ func (s *server) startPoller(assumeRunning bool) {
 					} else if wasRunning {
 						notRunningCount++
 						if notRunningCount >= 8 {
-							s.stableDrain()
+							s.stableDrain(stop, board, operationSeq)
 							_ = s.conn.Event("scriptState", map[string]string{"state": "finished"})
 							wasRunning = false
 							notRunningCount = 0
@@ -850,8 +972,8 @@ func (s *server) startPoller(assumeRunning bool) {
 					}
 				} else {
 					linkErrors++
-					if linkErrors >= 3 {
-						s.reportBoardDisconnected(board, "poller script_running", err)
+					if linkErrors >= 6 {
+						s.reportWorkerBoardDisconnected(board, operationSeq, "poller script_running", err)
 						return
 					}
 				}
@@ -883,13 +1005,17 @@ func (s *server) stopPoller() {
 	}
 }
 
-func (s *server) stableDrain() {
-	board := s.currentBoard()
+func (s *server) stableDrain(stop <-chan struct{}, board *usbdbg.Board, operationSeq uint64) {
 	if board == nil || !s.supportsTxBuf() {
 		return
 	}
 	for i := 0; i < 5; i++ {
-		data, _ := s.currentProtocol().DrainTxBuf(board)
+		var data []byte
+		if !s.withWorkerBoardOperation(stop, board, operationSeq, func() {
+			data, _ = s.currentProtocol().DrainTxBuf(board)
+		}) {
+			return
+		}
 		if len(data) == 0 {
 			return
 		}
@@ -900,6 +1026,8 @@ func (s *server) stableDrain() {
 
 func (s *server) cleanupBoard() {
 	s.beginUserOperation()
+	s.stopPoller()
+	s.stopPreview()
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 
@@ -908,8 +1036,6 @@ func (s *server) cleanupBoard() {
 	s.closing = true
 	s.boardMu.Unlock()
 
-	s.stopPoller()
-	s.stopPreview()
 	if board == nil {
 		return
 	}
@@ -984,6 +1110,12 @@ func (s *server) isCurrentBoard(board *usbdbg.Board) bool {
 	return !s.closing && s.board == board
 }
 
+func (s *server) isWorkerCurrent(board *usbdbg.Board, operationSeq uint64) bool {
+	s.boardMu.Lock()
+	defer s.boardMu.Unlock()
+	return !s.closing && s.board == board && s.operationSeq == operationSeq
+}
+
 func (s *server) beginUserOperation() uint64 {
 	s.boardMu.Lock()
 	defer s.boardMu.Unlock()
@@ -995,6 +1127,28 @@ func (s *server) currentOperationSeq() uint64 {
 	s.boardMu.Lock()
 	defer s.boardMu.Unlock()
 	return s.operationSeq
+}
+
+func stopRequested(stop <-chan struct{}) bool {
+	select {
+	case <-stop:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *server) withWorkerBoardOperation(stop <-chan struct{}, board *usbdbg.Board, operationSeq uint64, fn func()) bool {
+	if stopRequested(stop) || !s.isWorkerCurrent(board, operationSeq) {
+		return false
+	}
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	if stopRequested(stop) || !s.isWorkerCurrent(board, operationSeq) {
+		return false
+	}
+	fn()
+	return true
 }
 
 func (s *server) isConnectSetupCurrent(board *usbdbg.Board, operationSeq uint64) bool {
@@ -1110,6 +1264,13 @@ func (s *server) reportBoardDisconnected(board *usbdbg.Board, source string, err
 	_, _ = os.Stderr.WriteString("[canmv-backend] board disconnected source=" + source + " err=" + errorString(err) + "\n")
 	_ = board.Close()
 	_ = s.conn.Event("boardDisconnected", map[string]string{"source": source, "message": errorString(err)})
+}
+
+func (s *server) reportWorkerBoardDisconnected(board *usbdbg.Board, operationSeq uint64, source string, err error) {
+	if !s.isWorkerCurrent(board, operationSeq) {
+		return
+	}
+	s.reportBoardDisconnected(board, source, err)
 }
 
 func (s *server) stopScriptAndDrain(board *usbdbg.Board, timeout time.Duration, emitDuringWait bool) []byte {

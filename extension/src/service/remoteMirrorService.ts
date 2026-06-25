@@ -17,9 +17,12 @@ export class RemoteMirrorService {
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly fileService: FileService,
+    private readonly isRemoteAvailable: () => boolean = () => true,
+    private readonly unavailableMessage: () => string = () => 'Remote files are not available',
   ) {}
 
   async openRemoteFile(remotePath: string): Promise<void> {
+    this.assertAvailable();
     const normalizedRemotePath = normalizeRemotePath(remotePath);
     if (!isPythonFile(normalizedRemotePath)) {
       await vscode.commands.executeCommand('vscode.open', vscode.Uri.from({
@@ -66,6 +69,7 @@ export class RemoteMirrorService {
   async syncDocumentToRemote(document: vscode.TextDocument): Promise<boolean> {
     const remotePath = this.remotePathForDocument(document);
     if (!remotePath) return false;
+    this.assertAvailable();
 
     const data = new TextEncoder().encode(document.getText());
     const ok = await this.fileService.writeFile(remotePath, data);
@@ -135,6 +139,12 @@ export class RemoteMirrorService {
       logInfo('Mirror', `Pylance extraPaths updated for CanMV mirror: ${mirrorRoot}`);
     } catch (err) {
       logWarn('Mirror', `Could not update python.analysis.extraPaths: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private assertAvailable(): void {
+    if (!this.isRemoteAvailable()) {
+      throw new Error(this.unavailableMessage());
     }
   }
 }

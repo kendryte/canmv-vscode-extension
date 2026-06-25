@@ -338,7 +338,7 @@ func (b *Board) Capabilities() (uint32, uint32, error) {
 	// Send a harmless NUL payload. Current firmware ignores it, while older
 	// experimental firmware that used this opcode for LIST_DIR can return an
 	// error instead of waiting forever for a path payload.
-	data, err := b.CommandReadWithIdle(CmdCapabilities, 1, []byte{0}, 256)
+	data, err := b.CommandRead(CmdCapabilities, 1, []byte{0}, responseLen[CmdCapabilities])
 	if err != nil {
 		return 0, 0, err
 	}

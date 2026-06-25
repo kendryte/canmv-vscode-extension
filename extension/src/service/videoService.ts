@@ -40,7 +40,8 @@ export class VideoService {
     });
   }
 
-  async startPreview(fps?: number, resolution?: { w: number; h: number }, options?: { assumeScriptRunning?: boolean }): Promise<boolean> {
+  async startPreview(fps?: number, resolution?: { w: number; h: number }, options?: { assumeScriptRunning?: boolean; suppressErrors?: boolean }): Promise<boolean> {
+    const suppressErrors = options?.suppressErrors === true;
     if (this.previewActive) {
       return true;
     }
@@ -56,7 +57,9 @@ export class VideoService {
       if (!isResponse(runningResult)) {
         const err = runningResult as ProtocolError;
         logWarn('Preview', `Skipped: ${err.error.message}`);
-        vscode.window.showWarningMessage(t('CanMV: Cannot enable preview - {message}', { message: err.error.message }));
+        if (!suppressErrors) {
+          vscode.window.showWarningMessage(t('CanMV: Cannot enable preview - {message}', { message: err.error.message }));
+        }
         return false;
       }
       const runningPayload = runningResult.result as { running?: boolean };
@@ -114,7 +117,9 @@ export class VideoService {
         this.frameSubscription = null;
         const message = payload.message || t('Unknown preview error');
         logError('Preview', `Start failed: ${message}`);
-        vscode.window.showErrorMessage(t('CanMV: Preview failed - {message}', { message }));
+        if (!suppressErrors) {
+          vscode.window.showErrorMessage(t('CanMV: Preview failed - {message}', { message }));
+        }
         return false;
       }
       if (payload.status === 'waiting') {
@@ -133,7 +138,9 @@ export class VideoService {
       this.frameSubscription = null;
       const err = result as ProtocolError;
       logError('Preview', `Start failed: ${err.error.message}`);
-      vscode.window.showErrorMessage(t('CanMV: Preview failed - {message}', { message: err.error.message }));
+      if (!suppressErrors) {
+        vscode.window.showErrorMessage(t('CanMV: Preview failed - {message}', { message: err.error.message }));
+      }
       return false;
     }
   }
