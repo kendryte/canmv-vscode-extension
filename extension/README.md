@@ -4,6 +4,8 @@ The CanMV for Visual Studio Code extension brings CanMV K230 board development i
 
 ![CanMV for Visual Studio Code demo](https://raw.githubusercontent.com/kendryte/canmv-vscode-extension/main/extension/resources/demo.gif)
 
+[![YouTube Tutorial](https://img.shields.io/badge/YouTube-Tutorial-red?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=E-uumNsHLZc) [![Bilibili Tutorial](https://img.shields.io/badge/Bilibili-教程-blue?style=for-the-badge&logo=bilibili&logoColor=white)](https://www.bilibili.com/video/BV1q27q67EEV)
+
 ## Features
 
 - Connect and disconnect CanMV K230 boards from the CanMV activity bar or Command Palette.

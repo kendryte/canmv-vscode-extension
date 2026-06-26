@@ -95,6 +95,10 @@
     let lines = [''];
     let cursorRow = 0;
     let cursorCol = 0;
+    let renderFrame = 0;
+    let scrollAfterRender = false;
+    const maxTerminalLines = 4000;
+    const maxTerminalChars = 128 * 1024;
 
     window.addEventListener('message', (event) => {
       const msg = event.data;
@@ -206,8 +210,8 @@
 
     function append(text) {
       writeTerminal(text);
-      renderTerminal();
-      scrollToBottom();
+      trimTerminalBuffer();
+      scheduleRender(true);
     }
 
     function setInputState(enabled, reason, canInterrupt) {
@@ -307,19 +311,18 @@
       promptLine.classList.toggle('disabled', !inputEnabled);
       if (!inputEnabled) {
         promptLine.textContent = disabledReason;
-        renderTerminal();
+        renderNow(false);
         return;
       }
       promptLine.textContent = '';
-      renderTerminal();
-      scrollToBottom();
+      renderNow(true);
     }
 
     function clearTerminal() {
       lines = [''];
       cursorRow = 0;
       cursorCol = 0;
-      renderTerminal();
+      renderNow(false);
     }
 
     function writeTerminal(text) {
@@ -434,7 +437,75 @@
       }
     }
 
+    function trimTerminalBuffer() {
+      while (lines.length > maxTerminalLines) {
+        dropFirstLine();
+      }
+
+      let total = 0;
+      for (const line of lines) {
+        total += line.length;
+      }
+
+      while (total > maxTerminalChars && lines.length > 1) {
+        total -= dropFirstLine();
+      }
+
+      if (total > maxTerminalChars && lines.length === 1 && lines[0].length > maxTerminalChars) {
+        const excess = lines[0].length - maxTerminalChars;
+        lines[0] = lines[0].slice(excess);
+        cursorCol = Math.max(0, cursorCol - excess);
+      }
+    }
+
+    function dropFirstLine() {
+      const removed = lines.shift() || '';
+      if (lines.length === 0) {
+        lines.push('');
+      }
+      if (cursorRow > 0) {
+        cursorRow -= 1;
+      } else {
+        cursorCol = Math.min(cursorCol, lines[0].length);
+      }
+      return removed.length;
+    }
+
+    function scheduleRender(scroll) {
+      scrollAfterRender = scrollAfterRender || scroll;
+      if (renderFrame) {
+        return;
+      }
+      renderFrame = window.requestAnimationFrame(() => {
+        renderFrame = 0;
+        const shouldScroll = scrollAfterRender;
+        scrollAfterRender = false;
+        renderTerminal();
+        if (shouldScroll) {
+          scrollToBottom();
+        }
+      });
+    }
+
+    function renderNow(scroll) {
+      const shouldScroll = scroll || scrollAfterRender;
+      scrollAfterRender = false;
+      if (renderFrame) {
+        window.cancelAnimationFrame(renderFrame);
+        renderFrame = 0;
+      }
+      renderTerminal();
+      if (shouldScroll) {
+        scrollToBottom();
+      }
+    }
+
     function renderTerminal() {
+      if (!inputEnabled) {
+        terminal.textContent = lines.join('\n');
+        return;
+      }
+
       terminal.textContent = '';
       for (let row = 0; row < lines.length; row++) {
         if (row > 0) {

@@ -8,10 +8,14 @@ export class TerminalViewProvider implements vscode.WebviewViewProvider {
   private inputEnabled = false;
   private inputReason = t('Connect board to use REPL input');
   private interruptEnabled = false;
+  private pendingText = '';
+  private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private _onClear = new vscode.EventEmitter<void>();
   private _onInput = new vscode.EventEmitter<string>();
   readonly onClear = this._onClear.event;
   readonly onInput = this._onInput.event;
+  private readonly flushDelayMs = 100;
+  private readonly immediateFlushBytes = 256 * 1024;
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -30,6 +34,7 @@ export class TerminalViewProvider implements vscode.WebviewViewProvider {
       } else if (msg.type === 'saveTerminalLog') {
         void this.saveLog();
       } else if (msg.type === 'terminalReady') {
+        this.flushPendingText();
         this.postInputState();
       } else if (msg.type === 'terminalInput' && typeof msg.text === 'string') {
         this._onInput.fire(msg.text);
@@ -38,6 +43,7 @@ export class TerminalViewProvider implements vscode.WebviewViewProvider {
     webviewView.onDidDispose(() => {
       if (this.view === webviewView) {
         this.view = undefined;
+        this.clearPendingText();
       }
     });
     const text = this.scrollback();
@@ -48,15 +54,53 @@ export class TerminalViewProvider implements vscode.WebviewViewProvider {
   }
 
   appendText(text: string): void {
-    if (this.view) {
-      void this.view.webview.postMessage({ type: 'append', text });
+    if (!this.view || !text) {
+      return;
     }
+    this.pendingText += text;
+    if (this.pendingText.length >= this.immediateFlushBytes) {
+      this.flushPendingText();
+      return;
+    }
+    this.scheduleFlush();
   }
 
   clear(): void {
+    this.clearPendingText();
     if (this.view) {
       void this.view.webview.postMessage({ type: 'clear' });
     }
+  }
+
+  private scheduleFlush(): void {
+    if (this.flushTimer) {
+      return;
+    }
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = undefined;
+      this.flushPendingText();
+    }, this.flushDelayMs);
+  }
+
+  private flushPendingText(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+    }
+    if (!this.view || !this.pendingText) {
+      return;
+    }
+    const text = this.pendingText;
+    this.pendingText = '';
+    void this.view.webview.postMessage({ type: 'append', text });
+  }
+
+  private clearPendingText(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+    }
+    this.pendingText = '';
   }
 
   private async saveLog(): Promise<void> {

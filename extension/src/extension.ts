@@ -62,11 +62,14 @@ export function activate(context: vscode.ExtensionContext) {
     logError('Stubs', `Default setup error: ${err}`);
   });
   context.subscriptions.push(statusItem);
-  statusItem.show();
 
   const boardService = new BoardService(session, new BoardDetector(session));
   const scriptService = new ScriptService(session);
   const fileService = new FileService(session);
+  const pkg = context.extension.packageJSON as { displayName?: string; name?: string; version?: string };
+  const extensionName = pkg.displayName || pkg.name || 'CanMV';
+  const extensionVersion = pkg.version || 'unknown';
+  const extensionStatusLabel = `${extensionName} v${extensionVersion}`;
   let remoteFilesAvailable: () => boolean = () => false;
   let remoteFilesUnavailableMessage: () => string = () => t('Not connected');
   const remoteMirrorService = new RemoteMirrorService(
@@ -93,6 +96,33 @@ export function activate(context: vscode.ExtensionContext) {
   let refreshExplorerSoon: (delayMs?: number) => void = () => {};
   let pauseRemoteFiles: (durationMs: number) => void = () => {};
   let onScriptRunningContextChanged = () => {};
+  const extensionStatusTooltipLines = () => [
+    t('CanMV extension'),
+    t('Extension Version: {version}', { version: extensionVersion }),
+  ];
+  const statusTooltipForState = (state: string) => [
+    ...extensionStatusTooltipLines(),
+    t('Status: {status}', { status: state }),
+  ].join('\n');
+  const setStatusForState = (state: string) => {
+    if (state === 'connecting') {
+      statusItem.text = `$(sync~spin) ${extensionStatusLabel}`;
+      statusItem.tooltip = statusTooltipForState(states.connecting());
+      return;
+    }
+    if (state === 'streaming') {
+      statusItem.text = `$(device-camera) ${extensionStatusLabel}`;
+      statusItem.tooltip = statusTooltipForState(states.streaming());
+      return;
+    }
+    if (state === 'connected') {
+      statusItem.text = `$(debug-start) ${extensionStatusLabel}`;
+      statusItem.tooltip = statusTooltipForState(states.connected());
+      return;
+    }
+    statusItem.text = `$(debug-disconnect) ${extensionStatusLabel}`;
+    statusItem.tooltip = statusTooltipForState(states.disconnected());
+  };
   const boardStatusLabel = (info: BoardInfo) => {
     const board = info.boardName || info.boardType;
     return [board, info.fwVersion, info.memorySize].filter(Boolean).join(' ') || 'CanMV';
@@ -200,12 +230,16 @@ export function activate(context: vscode.ExtensionContext) {
     }
     onScriptRunningContextChanged();
   };
-  const boardStatusText = (info: BoardInfo) => {
-    return `$(circuit-board) ${boardStatusLabel(info)}`;
+  const boardStatusText = (_info: BoardInfo) => {
+    return `$(circuit-board) ${extensionStatusLabel}`;
   };
   const boardStatusTooltip = (info: BoardInfo) => {
     const board = info.boardName || info.boardType;
+    const stateLabel = session.state === 'streaming' ? states.streaming() : states.connected();
     const lines = [
+      ...extensionStatusTooltipLines(),
+      t('Status: {status}', { status: stateLabel }),
+      '',
       t('CanMV board connected'),
       t('Board: {board}', { board }),
       t('Firmware: {firmwareVersion}', { firmwareVersion: info.fwVersion }),
@@ -222,9 +256,10 @@ export function activate(context: vscode.ExtensionContext) {
       controlProvider?.setState({ statusText: boardStatusLabel(info) });
       return;
     }
-    statusItem.text = '$(debug-start) CanMV';
-    statusItem.tooltip = states.connected();
+    setStatusForState(session.state);
   };
+  setStatusForState(session.state);
+  statusItem.show();
   const boardSupportsReplInput = () => {
     return boardService.boardInfo()?.capabilities?.replInput === true;
   };
@@ -314,18 +349,26 @@ export function activate(context: vscode.ExtensionContext) {
   const virtualTouchRefreshIntervalMs = 2000;
   const terminalScrollback: string[] = [];
   const terminalScrollbackLimit = 128 * 1024;
+  let terminalScrollbackSize = 0;
 
   const trimTerminalScrollback = () => {
-    let total = terminalScrollback.reduce((sum, chunk) => sum + chunk.length, 0);
-    while (total > terminalScrollbackLimit && terminalScrollback.length > 0) {
-      const removed = terminalScrollback.shift() || '';
-      total -= removed.length;
+    while (terminalScrollbackSize > terminalScrollbackLimit && terminalScrollback.length > 0) {
+      const excess = terminalScrollbackSize - terminalScrollbackLimit;
+      const first = terminalScrollback[0] || '';
+      if (first.length <= excess) {
+        const removed = terminalScrollback.shift() || '';
+        terminalScrollbackSize -= removed.length;
+      } else {
+        terminalScrollback[0] = first.slice(excess);
+        terminalScrollbackSize -= excess;
+      }
     }
   };
 
   const appendTerminal = (text: string) => {
     if (!text) return;
     terminalScrollback.push(text);
+    terminalScrollbackSize += text.length;
     trimTerminalScrollback();
     terminalViewProvider?.appendText(text);
   };
@@ -1095,6 +1138,7 @@ export function activate(context: vscode.ExtensionContext) {
   terminalViewProvider = new TerminalViewProvider(context, () => terminalScrollback.join(''));
   terminalViewProvider.onClear(() => {
     terminalScrollback.length = 0;
+    terminalScrollbackSize = 0;
   });
   let terminalInputQueue = Promise.resolve();
   terminalViewProvider.onInput((text) => {
@@ -1183,8 +1227,7 @@ export function activate(context: vscode.ExtensionContext) {
         resetBoardReadiness();
         fileService.clearCache();
         await boardService.disconnectBoard();
-        statusItem.text = '$(debug-disconnect) CanMV';
-        statusItem.tooltip = states.disconnected();
+        setStatusForState('disconnected');
         updateTerminalInputState();
         appendTerminalLine(t('[CanMV] Disconnected'));
       } finally {
@@ -1581,8 +1624,7 @@ export function activate(context: vscode.ExtensionContext) {
     if (nextConnected) {
       updateBoardStatus();
     } else {
-      statusItem.text = '$(debug-disconnect) CanMV';
-      statusItem.tooltip = states.disconnected();
+      setStatusForState(state);
     }
   });
 
