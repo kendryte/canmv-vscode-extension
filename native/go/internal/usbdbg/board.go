@@ -16,17 +16,18 @@ const (
 	CtrlD     = 0x04
 
 	// Shared by both legacy Qt IDE protocol and capability protocol.
-	CmdScriptExec = 0x05
-	CmdScriptStop = 0x06
-	CmdTxInput    = 0x11
-	CmdFBEnable   = 0x0D
-	CmdFWVersion  = 0x80
-	CmdFrameSize  = 0x81
-	CmdFrameDump  = 0x82
-	CmdArchStr    = 0x83
-	CmdTxBufLen   = 0x8E
-	CmdTxBuf      = 0x8F
-	CmdVerifyFile = 0xA1
+	CmdScriptExec  = 0x05
+	CmdScriptStop  = 0x06
+	CmdTxInput     = 0x11
+	CmdFBEnable    = 0x0D
+	CmdFWVersion   = 0x80
+	CmdFrameSize   = 0x81
+	CmdFrameDump   = 0x82
+	CmdArchStr     = 0x83
+	CmdQueryStatus = 0x8D
+	CmdTxBufLen    = 0x8E
+	CmdTxBuf       = 0x8F
+	CmdVerifyFile  = 0xA1
 
 	// Legacy-only commands. Keep their wire semantics compatible with old IDEs.
 	CmdSysReset      = 0x0C
@@ -66,6 +67,14 @@ const (
 	CapKnownMask    = CapListDir | CapReadFile | CapWriteFile | CapDeleteFile | CapRenameFile | CapMkdir | CapRmdir | CapFileExec | CapVirtualTouch | CapReplInput
 
 	capProtocolVersion = 2
+
+	// queryStatusMagic is the little-endian uint32 the firmware replies with to
+	// USBDBG_QUERY_STATUS. It is used as a stream resync sentinel: scanning for
+	// it lets the host discard stale/in-flight bytes left on the line (e.g. the
+	// tail of a frame dump or queued REPL output) before reading framed replies.
+	queryStatusMagic = 0xFFEEBBAA
+	// syncMaxDiscard bounds how many stale bytes Sync will skip before giving up.
+	syncMaxDiscard = 512 * 1024
 
 	maxDirPayload   = 8 * 1024 * 1024
 	maxFileChunk    = 128 * 1024
@@ -178,6 +187,53 @@ func (b *Board) DrainInput(timeout time.Duration, maxReads int) ([]byte, error) 
 		out = append(out, buf[:n]...)
 	}
 	return out, nil
+}
+
+// Sync resynchronizes the command/response stream with the device. It sends
+// USBDBG_QUERY_STATUS and reads bytes until it locks onto the 4-byte
+// queryStatusMagic reply, discarding any stale/in-flight bytes that precede it
+// (e.g. the tail of a frame dump or queued REPL output after a reconnect while a
+// script is still running). After Sync returns nil the next framed reply read by
+// the caller is byte-aligned. It is bounded by syncMaxDiscard and the port read
+// timeout, so a non-responsive/legacy board fails fast rather than hanging.
+func (b *Board) Sync() error {
+	if b == nil || b.port == nil {
+		return fmt.Errorf("sync: board not open")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if err := b.writeCommandLocked(CmdQueryStatus, 0, nil); err != nil {
+		return err
+	}
+
+	// window holds the most recent up-to-4 bytes seen so the marker can be
+	// detected even when it straddles two reads.
+	var window []byte
+	buf := make([]byte, 4096)
+	discarded := 0
+	for {
+		n, err := b.port.Read(buf)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("sync: timed out waiting for status marker (discarded %d bytes)", discarded)
+		}
+		for i := 0; i < n; i++ {
+			window = append(window, buf[i])
+			if len(window) > 4 {
+				window = window[1:]
+			}
+			if len(window) == 4 && binary.LittleEndian.Uint32(window) == queryStatusMagic {
+				return nil
+			}
+		}
+		discarded += n
+		if discarded > syncMaxDiscard {
+			return fmt.Errorf("sync: status marker not found within %d bytes", syncMaxDiscard)
+		}
+	}
 }
 
 func (b *Board) FWVersionFull() (string, error) {

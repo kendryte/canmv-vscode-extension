@@ -42,6 +42,13 @@ func Negotiate(board *usbdbg.Board) Handler {
 		return newLegacy(profile)
 	}
 
+	// Resynchronize the stream first. On a reconnect while a script is still
+	// streaming, leftover/in-flight bytes (a frame-dump tail, queued REPL output)
+	// can sit on the line; without a resync the fixed-length reads below would
+	// consume those bytes as the FW_VERSION/Capabilities reply and falsely
+	// negotiate down to legacy (reporting file/REPL features as unsupported).
+	_ = board.Sync()
+
 	// Legacy firmware only enters USBDBG mode for a small token set. Probe with
 	// FW_VERSION first so newer commands are not routed into normal REPL input.
 	if fw, err := board.FWVersion(); err == nil {
@@ -52,7 +59,11 @@ func Negotiate(board *usbdbg.Board) Handler {
 	version, flags, err := board.Capabilities()
 	if err != nil {
 		firstErr := err
-		_, _ = board.DrainInput(120*time.Millisecond, 8)
+		// Re-align the stream and retry once. A clean resync means a genuine
+		// failure here reflects real (legacy) firmware, not a transient desync.
+		if syncErr := board.Sync(); syncErr != nil {
+			_, _ = board.DrainInput(120*time.Millisecond, 8)
+		}
 		version, flags, err = board.Capabilities()
 		if err != nil {
 			_, _ = board.DrainInput(30*time.Millisecond, 4)
