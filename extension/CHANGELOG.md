@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.2
+
+- Implemented stream resynchronization in native board communication layer for improved connection stability
+- Added tests for Sync functionality
+
 ## 0.4.1
 
 - Added YouTube and Bilibili tutorial links to README
