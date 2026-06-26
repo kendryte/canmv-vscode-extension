@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- Added YouTube and Bilibili tutorial links to README
+- Enhanced terminal buffer management and rendering in webview
+
 ## 0.4.0
 
 - Added Python stubs system: automatic download of K230 MicroPython stubs for Pylance code completion, with board firmware revision matching and local caching
