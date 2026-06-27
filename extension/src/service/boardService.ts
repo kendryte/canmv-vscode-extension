@@ -61,7 +61,7 @@ export class BoardService {
             label: b.port,
             description: b.name,
             detail: [
-              'USB ' + b.vid + ':' + b.pid,
+              b.vid && b.pid ? 'USB ' + b.vid + ':' + b.pid : undefined,
               b.serialNumber ? t('Serial {serialNumber}', { serialNumber: b.serialNumber }) : undefined,
               b.description,
             ].filter(Boolean).join(' | '),
@@ -86,9 +86,10 @@ export class BoardService {
       if (isResponse(result)) {
         const info = result.result as BoardInfo & { repl?: string };
         this.cachedInfo = info;
+        const connectedPort = info.port || port;
         logInfo(
           'Board',
-          `Connected: ${[info.boardName || info.boardType, info.fwVersion, info.memorySize].filter(Boolean).join(' ')} on ${port}`
+          `Connected: ${[info.boardName || info.boardType, info.fwVersion, info.memorySize].filter(Boolean).join(' ')} on ${connectedPort}`
         );
         if (info.archStr) {
           logInfo('Board', `ARCH_STR: ${info.archStr}`);

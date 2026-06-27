@@ -31,3 +31,7 @@ func DetectBoards() ([]DetectedBoard, error) {
 	}
 	return boards, nil
 }
+
+func NormalizePortName(portName string) string {
+	return portName
+}

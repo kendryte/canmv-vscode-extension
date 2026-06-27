@@ -3,14 +3,51 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 VERSION="$(node -p "require('$PROJECT_DIR/extension/package.json').version")"
-COMMIT="${CI_COMMIT_SHORT_SHA:-${GITHUB_SHA:-}}"
-COMMIT="${COMMIT:0:7}"
-if [ -z "$COMMIT" ]; then
-  COMMIT="$(git -C "$PROJECT_DIR" rev-parse --short=7 HEAD 2>/dev/null || echo "unknown")"
+COMMIT_FULL="${CI_COMMIT_SHA:-${GITHUB_SHA:-}}"
+if [ -z "$COMMIT_FULL" ]; then
+  COMMIT_FULL="$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")"
 fi
+COMMIT="${CI_COMMIT_SHORT_SHA:-${COMMIT_FULL:0:7}}"
 VERSION="${VERSION%-${COMMIT}}"
 VERSION="${VERSION%-${COMMIT:0:7}}"
 VSIX_NAME="canmv-vscode-${VERSION}-${COMMIT}.vsix"
+BUILD_INFO_PATH="$PROJECT_DIR/extension/build-info.json"
+BUILD_INFO_BACKUP=""
+BUILD_INFO_EXISTED=0
+if [ -f "$BUILD_INFO_PATH" ]; then
+  BUILD_INFO_EXISTED=1
+  BUILD_INFO_BACKUP="$(mktemp)"
+  cp "$BUILD_INFO_PATH" "$BUILD_INFO_BACKUP"
+fi
+
+cleanup_build_info() {
+  if [ "$BUILD_INFO_EXISTED" -eq 1 ] && [ -n "$BUILD_INFO_BACKUP" ]; then
+    cp "$BUILD_INFO_BACKUP" "$BUILD_INFO_PATH"
+    rm -f "$BUILD_INFO_BACKUP"
+  else
+    rm -f "$BUILD_INFO_PATH"
+  fi
+}
+trap cleanup_build_info EXIT
+
+write_build_info() {
+  local dirty=0
+  if ! git -C "$PROJECT_DIR" diff --quiet 2>/dev/null || ! git -C "$PROJECT_DIR" diff --cached --quiet 2>/dev/null; then
+    dirty=1
+  fi
+
+  node - "$BUILD_INFO_PATH" "$VERSION" "$COMMIT_FULL" "$COMMIT" "$dirty" <<'NODE'
+const fs = require('fs');
+const [file, version, commit, shortCommit, dirty] = process.argv.slice(2);
+fs.writeFileSync(file, JSON.stringify({
+  version,
+  commit,
+  shortCommit,
+  dirty: dirty === '1',
+  builtAt: new Date().toISOString(),
+}, null, 2) + '\n');
+NODE
+}
 
 echo "=== Packaging CanMV VS Code Extension ==="
 echo "Version: $VERSION"
@@ -58,6 +95,7 @@ stage_backend "darwin-arm64" "canmv-backend"
 
 # Step 3: Package VSIX
 echo "Packaging VSIX..."
+write_build_info
 mkdir -p "$PROJECT_DIR/release"
 pushd "$PROJECT_DIR/extension" > /dev/null
 npx @vscode/vsce package -o "$PROJECT_DIR/release/$VSIX_NAME"

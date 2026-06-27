@@ -1,3 +1,5 @@
+import * as cp from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { NativeBackend } from './backend/native';
@@ -1639,17 +1641,56 @@ function logActivationInfo(context: vscode.ExtensionContext): void {
     publisher?: string;
     version?: string;
   };
+  const buildInfo = readBuildInfo(context);
   const extensionId = context.extension.id || [pkg.publisher, pkg.name].filter(Boolean).join('.');
   const mode = vscode.ExtensionMode[context.extensionMode] || String(context.extensionMode);
   const version = pkg.version || 'unknown';
   const displayName = pkg.displayName || pkg.name || extensionId || 'CanMV';
+  const commitId = shortCommit(buildInfo.commit) || buildInfo.shortCommit || readGitCommit(context.extensionPath) || 'unknown';
 
   logInfo('Extension', `Activated ${displayName} ${version}`);
   logInfo('Extension', `ID: ${extensionId || 'unknown'}`);
+  logInfo('Extension', `Commit: ${commitId}${buildInfo.dirty ? '-dirty' : ''}`);
+  if (buildInfo.builtAt) {
+    logInfo('Extension', `Built: ${buildInfo.builtAt}`);
+  }
   logInfo('Extension', `Mode: ${mode}`);
   logInfo('Extension', `VS Code: ${vscode.version}`);
   logInfo('Extension', `Runtime: ${process.platform}-${process.arch}, Node ${process.versions.node}, Electron ${process.versions.electron || 'n/a'}`);
   logInfo('Extension', `Path: ${context.extensionPath}`);
+}
+
+type BuildInfo = {
+  commit?: string;
+  shortCommit?: string;
+  dirty?: boolean;
+  builtAt?: string;
+};
+
+function readBuildInfo(context: vscode.ExtensionContext): BuildInfo {
+  const file = path.join(context.extensionPath, 'build-info.json');
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')) as BuildInfo;
+  } catch {
+    return {};
+  }
+}
+
+function readGitCommit(extensionPath: string): string {
+  try {
+    const output = cp.execFileSync('git', ['-C', extensionPath, 'rev-parse', '--short=12', 'HEAD'], {
+      encoding: 'utf8',
+      timeout: 1000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return output.trim();
+  } catch {
+    return '';
+  }
+}
+
+function shortCommit(commit?: string): string {
+  return commit ? commit.slice(0, 12) : '';
 }
 
 export async function deactivate() {

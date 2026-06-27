@@ -142,21 +142,28 @@ type Board struct {
 }
 
 func Open(portName string, baudRate int) (*Board, error) {
-	mode := &serial.Mode{BaudRate: baudRate}
+	portName = NormalizePortName(portName)
+	mode := &serial.Mode{
+		BaudRate: baudRate,
+		InitialStatusBits: &serial.ModemOutputBits{
+			RTS: true,
+			DTR: false,
+		},
+	}
 	port, err := serial.Open(portName, mode)
 	if err != nil {
 		return nil, err
 	}
 	// Force a DTR transition (deassert -> assert) so the device receives a CDC
-	// SET_CONTROL_LINE_STATE with DTR asserted. Linux/Windows CDC drivers send
-	// this automatically on open, but macOS only emits it on a DTR *change*: a
-	// single SetDTR(true) can be a no-op there, leaving the firmware's DTR state
-	// false. Since the firmware gates every USBDBG reply on DTR, that makes it
-	// stay silent and capability negotiation falls back to legacy. The explicit
-	// low->high edge guarantees the asserted control request is delivered.
+	// SET_CONTROL_LINE_STATE with DTR asserted. macOS exposes USB CDC devices as
+	// both tty.* and cu.* paths and may not deliver an asserted DTR request
+	// unless the bit changes. The firmware gates USBDBG replies on DTR, so a
+	// missing attach edge makes all negotiation reads time out as zero bytes.
+	_ = port.SetRTS(true)
 	_ = port.SetDTR(false)
 	time.Sleep(50 * time.Millisecond)
 	_ = port.SetDTR(true)
+	time.Sleep(250 * time.Millisecond)
 	board := &Board{port: port}
 	_, _ = board.DrainInput(200*time.Millisecond, 20)
 	_ = port.SetReadTimeout(1 * time.Second)

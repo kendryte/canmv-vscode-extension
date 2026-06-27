@@ -202,6 +202,7 @@ func (s *server) connectBoard(params map[string]interface{}) (interface{}, int, 
 	if portName == "" {
 		return nil, 1001, "missing serial port"
 	}
+	portName = usbdbg.NormalizePortName(portName)
 	baudRate := intParam(params, "baudRate", 12000000)
 
 	if s.board != nil {
