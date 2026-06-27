@@ -385,7 +385,7 @@
         },
         "canmv.stubsBaseUrl": {
           "type": "string",
-          "default": "https://kendryte-download.canaan-creative.com/developer/tools/canmv_ide_k230/canmv_k230_stubs",
+          "default": "https://download.kendryte.com/developer/tools/canmv_ide_k230/canmv_k230_stubs",
           "description": "%canmv.configuration.stubsBaseUrl.description%"
         }
       }

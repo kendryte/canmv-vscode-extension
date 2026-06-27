@@ -35,7 +35,7 @@ export class StubsService {
       .getConfiguration('canmv')
       .get<string>(
         'stubsBaseUrl',
-        'https://kendryte-download.canaan-creative.com/developer/tools/canmv_ide_k230/canmv_k230_stubs'
+        'https://download.kendryte.com/developer/tools/canmv_ide_k230/canmv_k230_stubs'
       );
   }
 
