@@ -37,6 +37,7 @@
     "ms-python.vscode-pylance"
   ],
   "activationEvents": [
+    "onMcpServerDefinitionProvider:canmv.mcp",
     "onCommand:canmv.connectBoard",
     "onCommand:canmv.disconnectBoard",
     "onCommand:canmv.runCurrentScript",
@@ -437,7 +438,13 @@
           "description": "%canmv.configuration.stubsAutoDownload.description%"
         }
       }
-    }
+    },
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "canmv.mcp",
+        "label": "%canmv.mcp.provider.label%"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

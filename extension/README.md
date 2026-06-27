@@ -19,6 +19,7 @@ The CanMV for Visual Studio Code extension brings CanMV K230 board development i
 - Create, rename, delete, upload, download, open, edit, and auto-sync remote files.
 - Save the active editor directly as `/sdcard/main.py` or `/sdcard/boot.py`.
 - Use the CanMV Terminal panel for board output, REPL input, Ctrl-C script interrupt, log clearing, and log export.
+- Expose a CanMV MCP server for compatible VS Code AI clients, with board detection, connection, script, terminal, remote filesystem, examples, and stubs tools.
 - Configure K230 MicroPython stubs for Pylance, with automatic download and local cache reuse.
 - Inspect extension, backend, stubs, preview, and transfer logs in the `CanMV` Output channel.
 
@@ -99,6 +100,30 @@ Use the editor context menu while connected:
 ### Use the Terminal
 
 The CanMV Terminal panel keeps recent scrollback, mirrors board/script output, and accepts REPL input when the board is connected and no script is running. Terminal input is disabled while a script runs, except Ctrl-C, which requests a script stop. The terminal webview also supports clearing output and saving the log.
+
+### Use MCP Tools
+
+The extension contributes a `CanMV MCP Server` definition to VS Code. Compatible MCP clients can discover tools for capability analysis, board detection/connection, script execution, preview frames, virtual touch, terminal input/output, remote filesystem operations, and read-only access to cached CanMV examples and MicroPython stubs.
+
+The MCP server runs as a standalone stdio Node process and uses the same bundled backend as the extension. It honors `canmv.backendPath`, `canmv.serialPath`, and `canmv.baudRate` through environment passed by the extension. Example and stub tools read the local caches under `~/.kendryte/k230_canmv_examples` and `~/.kendryte/k230_canmv_stubs`, so refresh/connect once if those caches are empty.
+
+MCP capabilities include:
+
+| Capability | Tools | Purpose |
+| --- | --- | --- |
+| Extension and board analysis | `canmv_analyze_capabilities`, `canmv_resource_summary`, `canmv_resource_route_info`, `canmv_board_info`, `canmv_board_capabilities`, `canmv_firmware_info` | Let an AI client inspect available CanMV features, firmware/resource cache state, local script resources, and the connected board state. |
+| Board connection | `canmv_detect_boards`, `canmv_connect_board`, `canmv_disconnect_board` | Detect and manage a board session from an AI workflow. |
+| Script execution | `canmv_run_script`, `canmv_write_and_run_script`, `canmv_stop_script`, `canmv_script_running` | Generate, write, run, stop, and check MicroPython scripts while collecting terminal output. |
+| Preview and visual feedback | `canmv_start_preview`, `canmv_get_latest_frame`, `canmv_stop_preview` | Start framebuffer streaming and return the latest JPEG frame as base64 for visual iteration. |
+| Virtual touch | `canmv_virtual_touch_status`, `canmv_virtual_touch_tap` | Query and send virtual touch taps to supported running scripts. |
+| Terminal access | `canmv_terminal_input`, `canmv_terminal_output` | Send REPL input and read buffered board/script output. |
+| Remote filesystem | `canmv_list_dir`, `canmv_stat_file`, `canmv_read_file`, `canmv_write_file`, `canmv_execute_file`, `canmv_save_main_py`, `canmv_save_boot_py`, `canmv_mkdir`, `canmv_rename`, `canmv_delete_file`, `canmv_rmdir` | Inspect, edit, create, execute, install startup files, and remove files on the board. |
+| Examples context | `canmv_examples_list`, `canmv_examples_search`, `canmv_examples_read` | Find and read cached official examples so generated scripts follow working CanMV patterns. |
+| API stubs context | `canmv_stubs_list`, `canmv_stubs_search`, `canmv_stubs_read` | Find and read MicroPython `.pyi` definitions so generated scripts use accurate APIs and signatures. |
+| MCP resources | `resources/list`, `resources/read` | Expose cached example and stub files as MCP resources for clients that prefer resource browsing over tool calls. |
+| MCP prompts | `prompts/list`, `prompts/get` | Provide canned workflows for generating scripts, debugging errors, and iterating with preview frames. |
+
+For best script generation, ask the AI client to search examples and stubs before writing code, then run or save the generated script through the board and filesystem tools.
 
 ## Commands
 

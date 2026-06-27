@@ -35,5 +35,6 @@
   "canmv.configuration.baudRate.description": "串口波特率（默认：K230 USB CDC 使用 12M）。仅在手动设置 serialPath 时使用。",
   "canmv.configuration.backendPath.description": "CanMV 后端可执行文件路径。留空时使用扩展内置的后端。",
   "canmv.configuration.autoReconnect.description": "意外断开连接后自动重连",
-  "canmv.configuration.stubsAutoDownload.description": "连接开发板时自动下载 K230 代码提示文件和示例"
+  "canmv.configuration.stubsAutoDownload.description": "连接开发板时自动下载 K230 代码提示文件和示例",
+  "canmv.mcp.provider.label": "CanMV MCP 服务器"
 }

@@ -35,5 +35,6 @@
   "canmv.configuration.baudRate.description": "Serial baud rate (default: 12M for K230 USB CDC). Only used when serialPath is manually set.",
   "canmv.configuration.backendPath.description": "Path to a CanMV backend executable. Leave empty to use the backend bundled with the extension.",
   "canmv.configuration.autoReconnect.description": "Automatically reconnect on unexpected disconnect",
-  "canmv.configuration.stubsAutoDownload.description": "Automatically download K230 stubs and examples on board connect"
+  "canmv.configuration.stubsAutoDownload.description": "Automatically download K230 stubs and examples on board connect",
+  "canmv.mcp.provider.label": "CanMV MCP Server"
 }

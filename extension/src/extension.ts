@@ -26,6 +26,7 @@ import { CanmvResourceRouteService } from './service/resourceRouteService';
 import { ThresholdEditorPanel, type ThresholdEditorConfig, type ThresholdMode } from './webview/ThresholdEditorPanel';
 import { Methods, createRequest } from './protocol/methods';
 import { isResponse } from './protocol/types';
+import { registerMcpSupport } from './mcp/provider';
 import { logDebug, logError, logInfo, logWarn } from './output';
 import { t, states } from './i18n';
 
@@ -58,6 +59,7 @@ statusItem.tooltip = states.disconnected();
 
 export function activate(context: vscode.ExtensionContext) {
   logActivationInfo(context);
+  registerMcpSupport(context);
 
   backend = new NativeBackend(context);
   const session = new Session(backend, {
