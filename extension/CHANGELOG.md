@@ -1,14 +1,14 @@
 # Changelog
 
-## 0.4.2
+## 0.5.0
 
-- Implemented stream resynchronization in native board communication layer for improved connection stability
-- Added tests for Sync functionality
-
-## 0.4.1
-
+- Added `writeFull` for reliable serial writes that retry until all bytes are flushed
+- Improved device communication: normalized port names and enhanced build info management
+- Improved connection reliability: ensure DTR transition on Open for consistent device handshakes
+- Improved stream stability: desynchronization recovery in preview and polling loops, plus resynchronization in the native board communication layer
 - Added YouTube and Bilibili tutorial links to README
 - Enhanced terminal buffer management and rendering in webview
+- Added tests for Sync functionality
 
 ## 0.4.0
 
