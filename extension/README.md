@@ -107,6 +107,8 @@ The extension contributes a `CanMV MCP Server` definition to VS Code. Compatible
 
 The MCP server runs as a standalone stdio Node process and uses the same bundled backend as the extension. It honors `canmv.backendPath`, `canmv.serialPath`, and `canmv.baudRate` through environment passed by the extension. Example and stub tools read the local caches under `~/.kendryte/k230_canmv_examples` and `~/.kendryte/k230_canmv_stubs`, so refresh/connect once if those caches are empty.
 
+Board-facing MCP tools are single-shot. The server auto-connects to the board when a tool needs hardware access, runs the requested operation, and then disconnects the board/backend before returning the tool result. This prevents MCP clients from leaving the serial device claimed after a command finishes.
+
 MCP capabilities include:
 
 | Capability | Tools | Purpose |
@@ -123,7 +125,7 @@ MCP capabilities include:
 | MCP resources | `resources/list`, `resources/read` | Expose cached example and stub files as MCP resources for clients that prefer resource browsing over tool calls. |
 | MCP prompts | `prompts/list`, `prompts/get` | Provide canned workflows for generating scripts, debugging errors, and iterating with preview frames. |
 
-For best script generation, ask the AI client to search examples and stubs before writing code, then run or save the generated script through the board and filesystem tools.
+For best script generation, the MCP server instructs AI clients to call `canmv_resource_summary`, search/read relevant examples, and search/read relevant stubs before writing, saving, or running generated MicroPython code. This grounding step helps avoid scripts that use incorrect imports, outdated APIs, or signatures that do not match the connected CanMV firmware.
 
 ## Commands
 

@@ -78,6 +78,37 @@ class CanmvMcpServer {
   private readonly terminalOutputLimit = 128 * 1024;
   private latestFrame: FrameInfo | undefined;
   private frameWaiters: Array<(frame: FrameInfo) => void> = [];
+  private readonly autoDisconnectToolNames = new Set([
+    'canmv_analyze_capabilities',
+    'canmv_detect_boards',
+    'canmv_connect_board',
+    'canmv_disconnect_board',
+    'canmv_board_info',
+    'canmv_firmware_info',
+    'canmv_board_capabilities',
+    'canmv_run_script',
+    'canmv_write_and_run_script',
+    'canmv_stop_script',
+    'canmv_script_running',
+    'canmv_terminal_input',
+    'canmv_terminal_output',
+    'canmv_start_preview',
+    'canmv_stop_preview',
+    'canmv_get_latest_frame',
+    'canmv_virtual_touch_status',
+    'canmv_virtual_touch_tap',
+    'canmv_list_dir',
+    'canmv_stat_file',
+    'canmv_read_file',
+    'canmv_write_file',
+    'canmv_execute_file',
+    'canmv_save_main_py',
+    'canmv_save_boot_py',
+    'canmv_mkdir',
+    'canmv_rename',
+    'canmv_delete_file',
+    'canmv_rmdir',
+  ]);
 
   private tools: ToolDefinition[] = [
     {
@@ -251,7 +282,7 @@ class CanmvMcpServer {
     {
       name: 'canmv_run_script',
       title: 'Run Script',
-      description: 'Run MicroPython source code on the connected CanMV board.',
+      description: 'Run MicroPython source code on the connected CanMV board. For generated code, search/read CanMV examples and stubs first.',
       inputSchema: objectSchema({
         script: { type: 'string', description: 'MicroPython source code to execute.' },
       }, ['script']),
@@ -260,7 +291,7 @@ class CanmvMcpServer {
     {
       name: 'canmv_write_and_run_script',
       title: 'Write and Run Script',
-      description: 'Write generated MicroPython to the board, execute it, wait briefly, and return captured terminal output.',
+      description: 'Write generated MicroPython to the board, execute it, wait briefly, and return captured terminal output. Before generating code, search/read relevant CanMV examples and stubs.',
       inputSchema: objectSchema({
         script: { type: 'string', description: 'MicroPython source code to write and run.' },
         path: { type: 'string', description: 'Remote path to write. Defaults to /sdcard/mcp_script.py.' },
@@ -396,7 +427,7 @@ class CanmvMcpServer {
     {
       name: 'canmv_write_file',
       title: 'Write Remote File',
-      description: 'Overwrite a file on the connected board with UTF-8 text or base64 data.',
+      description: 'Overwrite a file on the connected board with UTF-8 text or base64 data. Before writing generated .py files, search/read relevant CanMV examples and stubs.',
       inputSchema: objectSchema({
         path: { type: 'string', description: 'Remote file path.' },
         content: { type: 'string', description: 'File content.' },
@@ -420,7 +451,7 @@ class CanmvMcpServer {
     {
       name: 'canmv_save_main_py',
       title: 'Save main.py',
-      description: 'Write MicroPython source to /sdcard/main.py on the connected board.',
+      description: 'Write MicroPython source to /sdcard/main.py on the connected board. Before saving generated code, search/read relevant CanMV examples and stubs.',
       inputSchema: objectSchema({
         script: { type: 'string', description: 'MicroPython source code.' },
       }, ['script']),
@@ -429,7 +460,7 @@ class CanmvMcpServer {
     {
       name: 'canmv_save_boot_py',
       title: 'Save boot.py',
-      description: 'Write MicroPython source to /sdcard/boot.py on the connected board.',
+      description: 'Write MicroPython source to /sdcard/boot.py on the connected board. Before saving generated code, search/read relevant CanMV examples and stubs.',
       inputSchema: objectSchema({
         script: { type: 'string', description: 'MicroPython source code.' },
       }, ['script']),
@@ -524,6 +555,7 @@ class CanmvMcpServer {
             protocolVersion: PROTOCOL_VERSION,
             capabilities: { tools: {}, resources: {}, prompts: {} },
             serverInfo: { name: SERVER_NAME, version: process.env.CANMV_EXTENSION_VERSION || 'unknown' },
+            instructions: scriptWorkflowInstructions(),
           });
           return;
         case 'ping':
@@ -568,23 +600,29 @@ class CanmvMcpServer {
       return;
     }
     const args = asObject(params.arguments);
+    let value: unknown;
+    let error: unknown;
     try {
-      const value = await tool.handler(args);
-      this.sendResult(id, toolResult(value));
+      value = await tool.handler(args);
     } catch (err) {
-      const result: ToolResult = {
-        isError: true,
-        content: [{ type: 'text', text: errorMessage(err) }],
-      };
-      this.sendResult(id, result);
+      error = err;
     }
+    await this.disconnectAfterTool(name);
+    if (error) {
+      this.sendResult(id, {
+        isError: true,
+        content: [{ type: 'text', text: errorMessage(error) }],
+      } satisfies ToolResult);
+      return;
+    }
+    this.sendResult(id, toolResult(value));
   }
 
   private async connectBoard(portArg?: string, baudRateArg?: number): Promise<unknown> {
     let port = portArg || process.env.CANMV_SERIAL_PATH || '';
     const baudRate = baudRateArg || DEFAULT_BAUD_RATE;
     if (!port) {
-      const detected = await this.requestResult(Methods.detectBoards, {}) as {
+      const detected = await this.requestResult(Methods.detectBoards, {}, { autoConnect: false }) as {
         boards?: { port: string; name: string }[];
       };
       const boards = detected.boards || [];
@@ -595,7 +633,7 @@ class CanmvMcpServer {
     }
 
     this.boardReady = false;
-    const info = await this.requestResult(Methods.connectBoard, { port, baudRate }) as BoardInfo;
+    const info = await this.requestResult(Methods.connectBoard, { port, baudRate }, { autoConnect: false }) as BoardInfo;
     this.boardInfo = info;
     if (!info.protocolVersion || info.protocolVersion <= 0) {
       this.boardReady = true;
@@ -666,6 +704,10 @@ class CanmvMcpServer {
     const waitMs = boundedNumber(args.waitMs, 0, 0, 10000);
     const baselineFrameId = args.fresh === true ? this.latestFrame?.frameId : undefined;
     let frame = this.latestFrame;
+    if (!frame && waitMs > 0) {
+      await this.connectBoard();
+      await this.requestResult(Methods.startPreview, {}, { autoConnect: false });
+    }
     if ((!frame || baselineFrameId !== undefined) && waitMs > 0) {
       frame = await this.waitForFrame(waitMs, baselineFrameId);
     }
@@ -697,12 +739,34 @@ class CanmvMcpServer {
     return { down, up };
   }
 
-  private async requestResult(method: { method: string }, params: Record<string, unknown>): Promise<unknown> {
+  private async requestResult(
+    method: { method: string },
+    params: Record<string, unknown>,
+    options: { autoConnect?: boolean } = {},
+  ): Promise<unknown> {
+    if (options.autoConnect !== false && shouldAutoConnectForMethod(method.method) && !this.boardInfo) {
+      await this.connectBoard();
+    }
     const result = await this.backend.request(createRequest(method as never, params as never));
     if (isResponse(result)) {
       return result.result;
     }
     throw new Error(result.error.message);
+  }
+
+  private async disconnectAfterTool(name: string): Promise<void> {
+    if (!this.autoDisconnectToolNames.has(name)) {
+      return;
+    }
+    try {
+      await this.backend.close();
+    } catch (err) {
+      logStderr(`Auto-disconnect failed after ${name}: ${errorMessage(err)}`);
+    } finally {
+      this.boardInfo = undefined;
+      this.boardReady = false;
+      this.latestFrame = undefined;
+    }
   }
 
   private handleBackendEvent(event: Event<string>): void {
@@ -985,6 +1049,24 @@ function objectSchema(properties: Record<string, unknown>, required: string[] = 
     required,
     additionalProperties: false,
   };
+}
+
+function scriptWorkflowInstructions(): string {
+  return [
+    'When generating, editing, saving, or running CanMV MicroPython scripts, first inspect the local CanMV context.',
+    'Use `canmv_resource_summary` to see available cached examples and stubs.',
+    'Use `canmv_examples_search` / `canmv_examples_read` for working script patterns.',
+    'Use `canmv_stubs_search` / `canmv_stubs_read` for accurate APIs, classes, constants, and function signatures.',
+    'Only after grounding in examples/stubs should you call script-writing or execution tools such as `canmv_write_and_run_script`, `canmv_run_script`, `canmv_write_file`, `canmv_save_main_py`, or `canmv_save_boot_py`.',
+    'For camera or vision scripts, prefer the `canmv_iterate_with_preview` prompt and use preview-frame tools when a board is connected.',
+    'Board-facing tools are single-shot: the MCP server auto-connects when needed and disconnects the board/backend after each tool call completes.',
+  ].join('\n');
+}
+
+function shouldAutoConnectForMethod(method: string): boolean {
+  return method !== Methods.detectBoards.method
+    && method !== Methods.connectBoard.method
+    && method !== Methods.disconnectBoard.method;
 }
 
 function listMcpResources(_params: Record<string, unknown>): Record<string, unknown> {
