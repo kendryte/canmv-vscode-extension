@@ -750,10 +750,14 @@ func (s *server) startPreviewLoop(fps int, operationSeq uint64) {
 						return
 					}
 					if err != nil {
-						linkErrors++
-						if linkErrors >= 6 {
-							s.reportWorkerBoardDisconnected(board, operationSeq, "preview tx drain", err)
-							return
+						if !s.recoverStreamDesync(stop, board, operationSeq) {
+							linkErrors++
+							if linkErrors >= 6 {
+								s.reportWorkerBoardDisconnected(board, operationSeq, "preview tx drain", err)
+								return
+							}
+						} else {
+							linkErrors = 0
 						}
 						if !sleepPreviewUntil(stop, frameProbeStart.Add(interval)) {
 							return
@@ -920,6 +924,11 @@ func (s *server) startPoller(assumeRunning bool) {
 				}
 				if err != nil {
 					if s.handleLegacyTxDrainError(board, err) {
+						linkErrors = 0
+						time.Sleep(50 * time.Millisecond)
+						continue
+					}
+					if s.recoverStreamDesync(stop, board, operationSeq) {
 						linkErrors = 0
 						time.Sleep(50 * time.Millisecond)
 						continue
@@ -1208,6 +1217,31 @@ func (s *server) handleLegacyTxDrainError(board *usbdbg.Board, err error) bool {
 	}
 	s.disableCapability(boardprotocol.CapTxBuf)
 	_, _ = os.Stderr.WriteString("[canmv-backend] legacy tx buffer disabled err=" + errorString(err) + "\n")
+	return true
+}
+
+// recoverStreamDesync attempts to realign the command/response stream after a
+// drain failure on capability firmware. Under sustained stdout backpressure
+// (e.g. a tight printing loop) either side can abandon a fixed-length reply
+// mid-transfer, leaving stray bytes that desync every later read; the symptom
+// is an implausible TX_BUF length. board.Sync() scans for the QUERY_STATUS
+// marker and discards the stale bytes, so recovery is preferable to counting
+// the error toward a disconnect. A real disconnect makes Sync fail fast (read
+// error/timeout), so the caller still tears down the link in that case.
+func (s *server) recoverStreamDesync(stop <-chan struct{}, board *usbdbg.Board, operationSeq uint64) bool {
+	if !s.hasCapabilitiesProtocol() {
+		return false
+	}
+	var syncErr error
+	if !s.withWorkerBoardOperation(stop, board, operationSeq, func() {
+		syncErr = board.Sync()
+	}) {
+		return false
+	}
+	if syncErr != nil {
+		return false
+	}
+	_, _ = os.Stderr.WriteString("[canmv-backend] stream resynchronized after tx drain desync\n")
 	return true
 }
 
