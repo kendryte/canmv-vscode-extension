@@ -22,8 +22,19 @@
     button {
       width: 28px; height: 24px; border: 1px solid #555; border-radius: 3px;
       background: #3c3c3c; color: #ccc; cursor: pointer; font-size: 12px;
+      display: inline-flex; align-items: center; justify-content: center;
     }
+    button svg {
+      width: 14px; height: 14px; stroke: currentColor; fill: none;
+      stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+    }
+    button .icon-fill { fill: currentColor; stroke: none; }
+    #record-btn .stop-icon { display: none; }
+    #record-btn.recording .record-icon { display: none; }
+    #record-btn.recording .stop-icon { display: block; }
     button:enabled:hover { background: #4c4c4c; }
+    button.active { border-color: #6aa9ff; background: #315f8d; color: #fff; }
+    button.recording { border-color: #ff7373; background: #8d3131; color: #fff; }
     button:disabled { opacity: 0.4; cursor: default; }
     select {
       height: 24px; min-width: 148px; border: 1px solid #555; border-radius: 3px;
@@ -32,6 +43,10 @@
     select:focus, button:focus { outline: 1px solid #6aa9ff; outline-offset: 1px; }
     .toolbar-separator { width: 1px; height: 18px; background: #555; margin: 0 4px; }
     .select-label { color: #aaa; font-size: 12px; line-height: 24px; }
+    #tool-readout {
+      flex: 0 1 260px; min-width: 0; max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      color: #b8b8b8; font: 11px/24px monospace;
+    }
     #main {
       flex: 1; min-height: 0; width: 100%; display: flex; background: #1e1e1e;
     }
@@ -41,9 +56,24 @@
     #canvas-wrap.original { overflow: auto; }
     #canvas-stage {
       min-width: 100%; min-height: 100%; display: flex; align-items: center; justify-content: center;
+      position: relative;
     }
     #canvas-wrap.original #canvas-stage { width: max-content; height: max-content; }
     canvas { flex: 0 0 auto; display: block; }
+    #canvas-overlay {
+      position: absolute; pointer-events: none; display: none; z-index: 2;
+    }
+    #roi-rect, #drag-rect {
+      position: absolute; display: none; border: 1px solid #6aa9ff;
+      background: rgba(106, 169, 255, 0.16);
+    }
+    #drag-rect { border-style: dashed; }
+    #pixel-marker {
+      position: absolute; display: none; width: 13px; height: 13px;
+      border: 1px solid #f2f2f2; border-radius: 50%;
+      transform: translate(-6px, -6px);
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.75);
+    }
     #histogram-panel {
       flex: 0 0 320px; min-width: 260px; max-width: 42vw; overflow: auto;
       border-left: 1px solid #333; background: #202020;
@@ -64,10 +94,10 @@
     .hist-canvas.hoverable { cursor: crosshair; }
     #histogram-tooltip {
       position: fixed; z-index: 10; display: none; pointer-events: none;
-      max-width: 120px; padding: 3px 7px; border: 1px solid #555; border-radius: 3px;
+      max-width: min(280px, calc(100vw - 16px)); padding: 3px 7px; border: 1px solid #555; border-radius: 3px;
       background: #2d2d2d; color: #ddd; font: 11px/1.35 monospace;
       box-shadow: 0 2px 8px rgba(0,0,0,0.35);
-      white-space: nowrap;
+      white-space: normal; overflow-wrap: anywhere;
     }
     .hist-stats {
       display: grid; grid-template-columns: repeat(4, auto minmax(3ch, 1fr));
@@ -93,10 +123,27 @@
     <span id="fps-display">FPS: --</span>
   </div>
   <div id="toolbar">
-    <button id="disable-btn" title="Disable Preview" aria-label="Disable Preview">⊘</button>
+    <button id="disable-btn" title="Disable Preview" aria-label="Disable Preview">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M4 12a9 9 0 0 1 16 0"/><path d="M9 12a3 3 0 0 0 4 2.8"/></svg>
+    </button>
     <button id="scale-btn" title="Show Original Size" aria-label="Show Original Size">1:1</button>
-    <button id="rotate-btn" title="Rotate Frame" aria-label="Rotate Frame">↻</button>
-    <button id="save-btn" title="Save Image" aria-label="Save Image">⤓</button>
+    <button id="rotate-btn" title="Rotate Frame" aria-label="Rotate Frame">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
+    </button>
+    <button id="save-btn" title="Save Image" aria-label="Save Image">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+    </button>
+    <button id="pixel-btn" title="Pick Pixel Value" aria-label="Pick Pixel Value">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5 5 5"/><path d="m5 19 4-1 9-9-3-3-9 9-1 4Z"/><path d="M5 19h5"/></svg>
+    </button>
+    <button id="roi-btn" title="Select Histogram ROI" aria-label="Select Histogram ROI">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5z"/><path d="M9 3v4"/><path d="M15 3v4"/><path d="M9 17v4"/><path d="M15 17v4"/></svg>
+    </button>
+    <button id="record-btn" title="Record Video" aria-label="Record Video">
+      <svg class="record-icon" viewBox="0 0 24 24" aria-hidden="true"><circle class="icon-fill" cx="12" cy="12" r="6"/></svg>
+      <svg class="stop-icon" viewBox="0 0 24 24" aria-hidden="true"><path class="icon-fill" d="M7 7h10v10H7z"/></svg>
+    </button>
+    <span id="tool-readout" aria-live="polite"></span>
     <span class="toolbar-separator" aria-hidden="true"></span>
     <label class="select-label" for="histogram-select">Histogram</label>
     <select id="histogram-select" title="Histogram color space" aria-label="Histogram color space">
@@ -111,6 +158,11 @@
     <div id="canvas-wrap">
       <div id="canvas-stage">
         <canvas id="canvas"></canvas>
+        <div id="canvas-overlay" aria-hidden="true">
+          <div id="roi-rect"></div>
+          <div id="drag-rect"></div>
+          <div id="pixel-marker"></div>
+        </div>
       </div>
     </div>
     <div id="histogram-panel">
@@ -148,6 +200,10 @@
     const scaleBtn = document.getElementById('scale-btn');
     const rotateBtn = document.getElementById('rotate-btn');
     const saveBtn = document.getElementById('save-btn');
+    const pixelBtn = document.getElementById('pixel-btn');
+    const roiBtn = document.getElementById('roi-btn');
+    const recordBtn = document.getElementById('record-btn');
+    const toolReadout = document.getElementById('tool-readout');
     const histogramSelect = document.getElementById('histogram-select');
     const histogramPanel = document.getElementById('histogram-panel');
     const histogramTooltip = document.getElementById('histogram-tooltip');
@@ -161,6 +217,10 @@
     const canvasStage = document.getElementById('canvas-stage');
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
+    const canvasOverlay = document.getElementById('canvas-overlay');
+    const roiRectEl = document.getElementById('roi-rect');
+    const dragRectEl = document.getElementById('drag-rect');
+    const pixelMarkerEl = document.getElementById('pixel-marker');
     const histogramSampleCanvas = document.createElement('canvas');
     const histogramSampleCtx = histogramSampleCanvas.getContext('2d', { willReadFrequently: true });
     const savedState = vscode.getState() || {};
@@ -180,6 +240,18 @@
     let histogramLastAt = 0;
     let lastHistogramChannels = [];
     let histogramHover = null;
+    let pixelPickEnabled = false;
+    let roiSelectEnabled = false;
+    let selectedRoi = isValidRoi(savedState.selectedRoi) ? savedState.selectedRoi : null;
+    let dragRoi = null;
+    let roiDragStart = null;
+    let isDraggingRoi = false;
+    let lastPixelPick = null;
+    let mediaRecorder = null;
+    let recordedChunks = [];
+    let recordingMimeType = '';
+    let recordingExtension = 'webm';
+    let isRecording = false;
     const fpsWindowMs = 3000;
     const fpsHoldMs = 3000;
     const histogramMaxSampleEdge = 160;
@@ -293,6 +365,7 @@
         let tDrawStart = performance.now();
         drawBitmap(bmp); bmp.close();
         let tDrawEnd = performance.now();
+        updateCanvasOverlay();
         scheduleHistogramUpdate();
         if (recordFps) {
           recordFpsSample(tDrawEnd);
@@ -340,16 +413,20 @@
       }
       ctx.drawImage(bmp, 0, 0);
       ctx.restore();
+      normalizeSelectedRoi();
     }
 
     function clearCanvas() {
+      stopRecording();
       pendingFrame = null; lastFrameData = null; lastImageSize = null; isRendering = false; hasFrame = false;
+      dragRoi = null; roiDragStart = null; isDraggingRoi = false; lastPixelPick = null;
       imageInfo.textContent = text('imageEmpty', 'Image: --');
       canvas.style.width = '';
       canvas.style.height = '';
       canvasStage.style.width = '';
       canvasStage.style.height = '';
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+      clearCanvasOverlay();
       clearHistogram();
       resetFps();
       updateControls();
@@ -402,6 +479,7 @@
           canvasWrap.scrollTop = Math.max(0, (stageH - wrapH) / 2);
           lastOriginalLayout = layout;
         }
+        updateCanvasOverlay();
         return;
       }
 
@@ -412,6 +490,7 @@
       const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
       canvas.style.width = `${Math.max(1, Math.floor(w * safeScale))}px`;
       canvas.style.height = `${Math.max(1, Math.floor(h * safeScale))}px`;
+      updateCanvasOverlay();
     }
 
     function resetFps() {
@@ -493,7 +572,17 @@
       scaleBtn.setAttribute('aria-pressed', scaleMode === 'original' ? 'true' : 'false');
       rotateBtn.disabled = !hasFrame;
       saveBtn.disabled = !hasFrame;
-      canvas.style.cursor = virtualTouchEnabled && hasFrame ? 'crosshair' : '';
+      pixelBtn.disabled = !hasFrame;
+      pixelBtn.classList.toggle('active', pixelPickEnabled);
+      pixelBtn.setAttribute('aria-pressed', pixelPickEnabled ? 'true' : 'false');
+      roiBtn.disabled = !hasFrame;
+      roiBtn.classList.toggle('active', roiSelectEnabled || !!selectedRoi);
+      roiBtn.setAttribute('aria-pressed', roiSelectEnabled ? 'true' : 'false');
+      recordBtn.disabled = !hasFrame && !isRecording;
+      recordBtn.classList.toggle('recording', isRecording);
+      recordBtn.title = isRecording ? text('stopRecording', 'Stop Recording') : text('recordVideo', 'Record Video');
+      recordBtn.setAttribute('aria-label', recordBtn.title);
+      canvas.style.cursor = getCanvasCursor();
     }
 
     function setVirtualTouchState(state) {
@@ -507,7 +596,7 @@
     }
 
     function persistViewState() {
-      vscode.setState({ scaleMode, histogramMode });
+      vscode.setState({ scaleMode, histogramMode, selectedRoi });
     }
 
     function applyHistogramMode() {
@@ -519,6 +608,94 @@
       } else {
         scheduleHistogramUpdate(true);
       }
+    }
+
+    function getCanvasCursor() {
+      if (!hasFrame) return '';
+      if (roiSelectEnabled) return 'crosshair';
+      if (pixelPickEnabled) return 'copy';
+      return virtualTouchEnabled ? 'crosshair' : '';
+    }
+
+    function isValidRoi(roi) {
+      return !!roi
+        && Number.isFinite(roi.x) && Number.isFinite(roi.y)
+        && Number.isFinite(roi.w) && Number.isFinite(roi.h)
+        && roi.w > 0 && roi.h > 0;
+    }
+
+    function normalizeSelectedRoi() {
+      if (!isValidRoi(selectedRoi) || !canvas.width || !canvas.height) {
+        selectedRoi = null;
+        return;
+      }
+      const x = clamp(Math.round(selectedRoi.x), 0, Math.max(0, canvas.width - 1));
+      const y = clamp(Math.round(selectedRoi.y), 0, Math.max(0, canvas.height - 1));
+      const right = clamp(Math.round(selectedRoi.x + selectedRoi.w), x + 1, canvas.width);
+      const bottom = clamp(Math.round(selectedRoi.y + selectedRoi.h), y + 1, canvas.height);
+      selectedRoi = { x, y, w: right - x, h: bottom - y };
+    }
+
+    function clearCanvasOverlay() {
+      canvasOverlay.style.display = 'none';
+      roiRectEl.style.display = 'none';
+      dragRectEl.style.display = 'none';
+      pixelMarkerEl.style.display = 'none';
+    }
+
+    function updateCanvasOverlay() {
+      if (!hasFrame || !canvas.width || !canvas.height) {
+        clearCanvasOverlay();
+        return;
+      }
+      const width = Math.max(1, Math.round(canvas.clientWidth));
+      const height = Math.max(1, Math.round(canvas.clientHeight));
+      canvasOverlay.style.display = 'block';
+      canvasOverlay.style.left = `${canvas.offsetLeft}px`;
+      canvasOverlay.style.top = `${canvas.offsetTop}px`;
+      canvasOverlay.style.width = `${width}px`;
+      canvasOverlay.style.height = `${height}px`;
+      drawOverlayRect(roiRectEl, selectedRoi);
+      drawOverlayRect(dragRectEl, dragRoi);
+      drawPixelMarker();
+    }
+
+    function drawOverlayRect(el, roi) {
+      if (!isValidRoi(roi) || !canvas.width || !canvas.height) {
+        el.style.display = 'none';
+        return;
+      }
+      const sx = canvas.clientWidth / canvas.width;
+      const sy = canvas.clientHeight / canvas.height;
+      el.style.display = 'block';
+      el.style.left = `${roi.x * sx}px`;
+      el.style.top = `${roi.y * sy}px`;
+      el.style.width = `${Math.max(1, roi.w * sx)}px`;
+      el.style.height = `${Math.max(1, roi.h * sy)}px`;
+    }
+
+    function drawPixelMarker() {
+      if (!lastPixelPick || !canvas.width || !canvas.height) {
+        pixelMarkerEl.style.display = 'none';
+        return;
+      }
+      const sx = canvas.clientWidth / canvas.width;
+      const sy = canvas.clientHeight / canvas.height;
+      pixelMarkerEl.style.display = 'block';
+      pixelMarkerEl.style.left = `${lastPixelPick.x * sx}px`;
+      pixelMarkerEl.style.top = `${lastPixelPick.y * sy}px`;
+    }
+
+    function setToolReadout(value) {
+      toolReadout.textContent = value || '';
+      toolReadout.title = value || '';
+    }
+
+    function clearPixelPick(clearReadout = true) {
+      lastPixelPick = null;
+      histogramTooltip.style.display = 'none';
+      if (clearReadout) setToolReadout('');
+      updateCanvasOverlay();
     }
 
     function clearHistogram() {
@@ -584,13 +761,16 @@
 
     function prepareHistogramSample() {
       if (!histogramSampleCtx || !canvas.width || !canvas.height) return null;
-      const scale = Math.min(1, histogramMaxSampleEdge / Math.max(canvas.width, canvas.height));
-      const width = Math.max(1, Math.round(canvas.width * scale));
-      const height = Math.max(1, Math.round(canvas.height * scale));
+      const source = isValidRoi(selectedRoi)
+        ? selectedRoi
+        : { x: 0, y: 0, w: canvas.width, h: canvas.height };
+      const scale = Math.min(1, histogramMaxSampleEdge / Math.max(source.w, source.h));
+      const width = Math.max(1, Math.round(source.w * scale));
+      const height = Math.max(1, Math.round(source.h * scale));
       if (histogramSampleCanvas.width !== width) histogramSampleCanvas.width = width;
       if (histogramSampleCanvas.height !== height) histogramSampleCanvas.height = height;
       histogramSampleCtx.clearRect(0, 0, width, height);
-      histogramSampleCtx.drawImage(canvas, 0, 0, width, height);
+      histogramSampleCtx.drawImage(canvas, source.x, source.y, source.w, source.h, 0, 0, width, height);
       return { width, height };
     }
 
@@ -922,6 +1102,12 @@
     });
     rotateBtn.addEventListener('click', () => {
       rotation = (rotation + 90) % 360;
+      selectedRoi = null;
+      dragRoi = null;
+      roiDragStart = null;
+      lastPixelPick = null;
+      persistViewState();
+      setToolReadout('');
       if (lastFrameData && !isRendering) renderFrame(lastFrameData, 0, false);
     });
     scaleBtn.addEventListener('click', () => {
@@ -944,6 +1130,41 @@
         vscode.postMessage({ type: 'saveImage', data: await blob.arrayBuffer() });
       }, 'image/png');
     });
+    pixelBtn.addEventListener('click', () => {
+      if (!hasFrame) return;
+      pixelPickEnabled = !pixelPickEnabled;
+      if (pixelPickEnabled) {
+        roiSelectEnabled = false;
+        clearPixelPick();
+      } else {
+        clearPixelPick();
+      }
+      updateControls();
+    });
+    roiBtn.addEventListener('click', () => {
+      if (!hasFrame) return;
+      roiSelectEnabled = !roiSelectEnabled;
+      if (roiSelectEnabled) {
+        pixelPickEnabled = false;
+        clearPixelPick();
+      }
+      if (!roiSelectEnabled && selectedRoi) {
+        selectedRoi = null;
+        dragRoi = null;
+        persistViewState();
+        scheduleHistogramUpdate(true);
+        updateCanvasOverlay();
+        setToolReadout('');
+      }
+      updateControls();
+    });
+    recordBtn.addEventListener('click', () => {
+      if (isRecording) {
+        stopRecording();
+      } else {
+        startRecording();
+      }
+    });
     histogramChannels.forEach((slot, index) => {
       slot.canvas.classList.add('hoverable');
       slot.canvas.addEventListener('mousemove', (event) => updateHistogramHover(slot, index, event));
@@ -952,8 +1173,87 @@
     histogramPanel.addEventListener('scroll', clearHistogramHover);
     window.addEventListener('blur', clearHistogramHover);
     window.addEventListener('resize', clearHistogramHover);
-    canvas.addEventListener('click', (event) => {
-      if (!virtualTouchEnabled || !hasFrame || !lastImageSize || !canvas.width || !canvas.height) return;
+    canvas.addEventListener('pointerdown', handleCanvasPointerDown);
+    canvas.addEventListener('pointermove', handleCanvasPointerMove);
+    canvas.addEventListener('pointerup', handleCanvasPointerUp);
+    canvas.addEventListener('pointercancel', cancelRoiDrag);
+    canvas.addEventListener('click', handleCanvasClick);
+    document.addEventListener('pointerdown', handleDocumentPointerDown, true);
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      if (isDraggingRoi) cancelRoiDrag();
+      if (lastPixelPick) clearPixelPick();
+      if (selectedRoi) {
+        selectedRoi = null;
+        persistViewState();
+        scheduleHistogramUpdate(true);
+        updateCanvasOverlay();
+        setToolReadout('');
+      }
+    });
+
+    function handleDocumentPointerDown(event) {
+      if (!pixelPickEnabled || !lastPixelPick) return;
+      const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+      if (event.target === canvas || path.includes(canvas)) return;
+      clearPixelPick();
+    }
+
+    function handleCanvasPointerDown(event) {
+      if (!roiSelectEnabled || !hasFrame || !canvas.width || !canvas.height || event.button !== 0) return;
+      const point = mapPointerToCanvas(event);
+      if (!point) return;
+      event.preventDefault();
+      canvas.setPointerCapture(event.pointerId);
+      isDraggingRoi = true;
+      roiDragStart = point;
+      dragRoi = { x: point.x, y: point.y, w: 1, h: 1 };
+      updateCanvasOverlay();
+    }
+
+    function handleCanvasPointerMove(event) {
+      if (!isDraggingRoi || !roiDragStart) return;
+      const point = mapPointerToCanvas(event);
+      if (!point) return;
+      event.preventDefault();
+      dragRoi = makeRoiFromPoints(roiDragStart.x, roiDragStart.y, point.x, point.y);
+      updateCanvasOverlay();
+    }
+
+    function handleCanvasPointerUp(event) {
+      if (!isDraggingRoi) return;
+      event.preventDefault();
+      const roi = dragRoi && dragRoi.w >= 2 && dragRoi.h >= 2
+        ? { x: dragRoi.x, y: dragRoi.y, w: dragRoi.w, h: dragRoi.h }
+        : null;
+      dragRoi = null;
+      roiDragStart = null;
+      isDraggingRoi = false;
+      try { canvas.releasePointerCapture(event.pointerId); } catch (_) {}
+      if (roi) {
+        selectedRoi = roi;
+        persistViewState();
+        scheduleHistogramUpdate(true);
+        setToolReadout(formatText(text('roiReadout', 'ROI x:{x} y:{y} w:{w} h:{h}'), roi));
+      }
+      updateCanvasOverlay();
+      updateControls();
+    }
+
+    function cancelRoiDrag() {
+      dragRoi = null;
+      roiDragStart = null;
+      isDraggingRoi = false;
+      updateCanvasOverlay();
+    }
+
+    function handleCanvasClick(event) {
+      if (isDraggingRoi) return;
+      if (pixelPickEnabled) {
+        pickPixel(event);
+        return;
+      }
+      if (!virtualTouchEnabled || roiSelectEnabled || !hasFrame || !lastImageSize || !canvas.width || !canvas.height) return;
       const point = mapCanvasClickToOriginal(event);
       if (!point) return;
       vscode.postMessage({
@@ -963,7 +1263,125 @@
         sourceWidth: lastImageSize.width,
         sourceHeight: lastImageSize.height
       });
-    });
+    }
+
+    function pickPixel(event) {
+      const point = mapPointerToCanvas(event);
+      if (!point) return;
+      try {
+        const pixel = ctx.getImageData(point.x, point.y, 1, 1).data;
+        lastPixelPick = { x: point.x, y: point.y };
+        updateCanvasOverlay();
+        const value = formatText(
+          text('pixelReadout', 'X:{x} Y:{y} RGB({r},{g},{b})'),
+          { x: point.x, y: point.y, r: pixel[0], g: pixel[1], b: pixel[2] }
+        );
+        setToolReadout(value);
+        showHistogramTooltip(event.clientX, event.clientY, value);
+      } catch (error) {
+        console.error('Unable to sample preview pixel', error);
+      }
+    }
+
+    function mapPointerToCanvas(event) {
+      if (!hasFrame || !canvas.width || !canvas.height) return null;
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      return {
+        x: clamp(Math.floor(((event.clientX - rect.left) / rect.width) * canvas.width), 0, canvas.width - 1),
+        y: clamp(Math.floor(((event.clientY - rect.top) / rect.height) * canvas.height), 0, canvas.height - 1)
+      };
+    }
+
+    function makeRoiFromPoints(x1, y1, x2, y2) {
+      const left = clamp(Math.min(x1, x2), 0, canvas.width - 1);
+      const top = clamp(Math.min(y1, y2), 0, canvas.height - 1);
+      const right = clamp(Math.max(x1, x2), left, canvas.width - 1);
+      const bottom = clamp(Math.max(y1, y2), top, canvas.height - 1);
+      return { x: left, y: top, w: right - left + 1, h: bottom - top + 1 };
+    }
+
+    function startRecording() {
+      if (!hasFrame || isRecording || !canvas.captureStream || typeof MediaRecorder === 'undefined') {
+        setToolReadout(text('recordingUnavailable', 'Video recording is unavailable in this webview'));
+        return;
+      }
+
+      const choice = selectRecordingType();
+      if (!choice) {
+        setToolReadout(text('recordingUnavailable', 'Video recording is unavailable in this webview'));
+        return;
+      }
+
+      try {
+        const fps = Math.max(1, Math.min(60, Math.round(getFpsValue(performance.now()) || 30)));
+        const stream = canvas.captureStream(fps);
+        recordedChunks = [];
+        recordingMimeType = choice.mimeType;
+        recordingExtension = choice.extension;
+        mediaRecorder = new MediaRecorder(stream, { mimeType: choice.mimeType });
+        mediaRecorder.addEventListener('dataavailable', (event) => {
+          if (event.data && event.data.size > 0) recordedChunks.push(event.data);
+        });
+        mediaRecorder.addEventListener('stop', saveRecording);
+        mediaRecorder.addEventListener('error', (event) => {
+          setToolReadout(event.error?.message || text('recordingFailed', 'Recording failed'));
+          stopRecording();
+        });
+        mediaRecorder.start(1000);
+        isRecording = true;
+        setToolReadout(formatText(text('recordingStarted', 'Recording {format}'), { format: recordingExtension.toUpperCase() }));
+        updateControls();
+      } catch (error) {
+        mediaRecorder = null;
+        isRecording = false;
+        setToolReadout(error instanceof Error ? error.message : text('recordingFailed', 'Recording failed'));
+        updateControls();
+      }
+    }
+
+    function stopRecording() {
+      if (!mediaRecorder) return;
+      const recorder = mediaRecorder;
+      mediaRecorder = null;
+      isRecording = false;
+      if (recorder.state !== 'inactive') {
+        try { recorder.requestData(); } catch (_) {}
+        recorder.stop();
+      } else {
+        void saveRecording();
+      }
+      for (const track of recorder.stream.getTracks()) track.stop();
+      updateControls();
+    }
+
+    async function saveRecording() {
+      if (!recordedChunks.length) {
+        setToolReadout('');
+        return;
+      }
+      const blob = new Blob(recordedChunks, { type: recordingMimeType });
+      recordedChunks = [];
+      vscode.postMessage({
+        type: 'saveVideo',
+        data: await blob.arrayBuffer(),
+        mimeType: recordingMimeType,
+        extension: recordingExtension
+      });
+      setToolReadout(formatText(text('recordingSaved', 'Recording ready ({format})'), { format: recordingExtension.toUpperCase() }));
+    }
+
+    function selectRecordingType() {
+      const candidates = [
+        { mimeType: 'video/mp4;codecs=h264', extension: 'mp4' },
+        { mimeType: 'video/mp4', extension: 'mp4' },
+        { mimeType: 'video/webm;codecs=vp9', extension: 'webm' },
+        { mimeType: 'video/webm;codecs=vp8', extension: 'webm' },
+        { mimeType: 'video/webm', extension: 'webm' }
+      ];
+      if (!MediaRecorder.isTypeSupported) return candidates[candidates.length - 1];
+      return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate.mimeType)) || null;
+    }
 
     function mapCanvasClickToOriginal(event) {
       const rect = canvas.getBoundingClientRect();
@@ -1044,6 +1462,12 @@
       rotateBtn.setAttribute('aria-label', text('rotateFrame', 'Rotate Frame'));
       saveBtn.title = text('saveImage', 'Save Image');
       saveBtn.setAttribute('aria-label', text('saveImage', 'Save Image'));
+      pixelBtn.title = text('pickPixelValue', 'Pick Pixel Value');
+      pixelBtn.setAttribute('aria-label', text('pickPixelValue', 'Pick Pixel Value'));
+      roiBtn.title = text('selectHistogramRoi', 'Select Histogram ROI');
+      roiBtn.setAttribute('aria-label', text('selectHistogramRoi', 'Select Histogram ROI'));
+      recordBtn.title = text('recordVideo', 'Record Video');
+      recordBtn.setAttribute('aria-label', text('recordVideo', 'Record Video'));
       document.querySelector('.select-label').textContent = text('histogram', 'Histogram');
       histogramSelect.title = text('histogramColorSpace', 'Histogram color space');
       histogramSelect.setAttribute('aria-label', text('histogramColorSpace', 'Histogram color space'));

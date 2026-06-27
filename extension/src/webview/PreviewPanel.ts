@@ -6,11 +6,13 @@ export class PreviewPanel extends BaseToolPanel {
   private _onProfile = new vscode.EventEmitter<any>();
   private _onCommand = new vscode.EventEmitter<string>();
   private _onSaveImage = new vscode.EventEmitter<Uint8Array>();
+  private _onSaveVideo = new vscode.EventEmitter<{ data: Uint8Array; extension: string; mimeType: string }>();
   private _onVirtualTouch = new vscode.EventEmitter<{ x: number; y: number; sourceWidth: number; sourceHeight: number }>();
   private captureWaiters: Array<(data: Uint8Array | undefined) => void> = [];
   readonly onProfile = this._onProfile.event;
   readonly onCommand = this._onCommand.event;
   readonly onSaveImage = this._onSaveImage.event;
+  readonly onSaveVideo = this._onSaveVideo.event;
   readonly onVirtualTouch = this._onVirtualTouch.event;
 
   constructor(context: vscode.ExtensionContext) {
@@ -22,6 +24,10 @@ export class PreviewPanel extends BaseToolPanel {
         this._onCommand.fire(msg.command);
       } else if (msg.type === 'saveImage' && msg.data) {
         this._onSaveImage.fire(new Uint8Array(msg.data));
+      } else if (msg.type === 'saveVideo' && msg.data) {
+        const extension = typeof msg.extension === 'string' && msg.extension ? msg.extension : 'webm';
+        const mimeType = typeof msg.mimeType === 'string' ? msg.mimeType : '';
+        this._onSaveVideo.fire({ data: new Uint8Array(msg.data), extension, mimeType });
       } else if (msg.type === 'captureImage') {
         this.resolveCaptureWaiter(msg.data ? new Uint8Array(msg.data) : undefined);
       } else if (msg.type === 'virtualTouch') {

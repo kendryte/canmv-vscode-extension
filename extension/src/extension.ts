@@ -553,6 +553,21 @@ export function activate(context: vscode.ExtensionContext) {
         await vscode.workspace.fs.writeFile(target, data);
         logInfo('Preview', `Saved frame image: ${target.fsPath}`);
       });
+      previewPanel.onSaveVideo(async ({ data, extension }) => {
+        const normalizedExtension = extension === 'mp4' ? 'mp4' : 'webm';
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const base = vscode.workspace.workspaceFolders?.[0]?.uri;
+        const defaultUri = base ? vscode.Uri.joinPath(base, `canmv-recording-${stamp}.${normalizedExtension}`) : undefined;
+        const filterName = normalizedExtension === 'mp4' ? t('MP4 Video') : t('WebM Video');
+        const target = await vscode.window.showSaveDialog({
+          defaultUri,
+          filters: { [filterName]: [normalizedExtension] },
+          saveLabel: t('Save Video'),
+        });
+        if (!target) return;
+        await vscode.workspace.fs.writeFile(target, data);
+        logInfo('Preview', `Saved video recording: ${target.fsPath}`);
+      });
       previewPanel.onVirtualTouch((tap) => {
         void sendVirtualTouchTap(tap).catch((err) => {
           logDebug('Touch', `Tap failed: ${err instanceof Error ? err.message : String(err)}`);
