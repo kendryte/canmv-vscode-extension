@@ -2,51 +2,30 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import * as https from 'https';
-import * as http from 'http';
 import { execFile } from 'child_process';
 import { logError, logInfo, logWarn } from '../output';
 import { resolveNativeBackendCommand } from '../backend/native';
 import { t } from '../i18n';
+import { CanmvResourceRoute, CanmvResourceRouteService, normalizeFirmwareRevision } from './resourceRouteService';
 
 /**
- * StubsService — downloads K230 MicroPython stubs from CanMV CDN
- * and configures Pylance to use them.
+ * Downloads K230 MicroPython stubs and configures Pylance to use them.
  *
- * CDN structure (verified 2026-06-16):
- *   ${baseUrl}/latest              -> plain-text file: latest revision id
- *   ${baseUrl}/${revision}.zip     -> stubs archive (~129KB)
- *
- * Local cache:
- *   ~/.kendryte/k230_canmv_stubs/${revision}/
- *
- * Pylance setting:
- *   python.analysis.extraPaths includes "~/.kendryte/k230_canmv_stubs/${revision}"
+ * Resource routing lives in CanmvResourceRouteService. This class owns only
+ * the stubs cache and Pylance settings.
  */
 export class StubsService {
   private static readonly lastRevisionKey = 'canmv.stubs.lastRevision';
   private readonly baseDir: string;
-  private readonly stubsBaseUrl: string;
   private boardRevisionRequested = '';
 
-  constructor(private readonly context?: vscode.ExtensionContext) {
+  constructor(
+    private readonly context: vscode.ExtensionContext | undefined,
+    private readonly routeService: CanmvResourceRouteService = new CanmvResourceRouteService(),
+  ) {
     this.baseDir = path.join(os.homedir(), '.kendryte', 'k230_canmv_stubs');
-    this.stubsBaseUrl = vscode.workspace
-      .getConfiguration('canmv')
-      .get<string>(
-        'stubsBaseUrl',
-        'https://download.kendryte.com/developer/tools/canmv_ide_k230/canmv_k230_stubs'
-      );
   }
 
-  /**
-   * Configure a useful default stubs revision without requiring a connected board.
-   *
-   * Flow:
-   *   1. Reuse last configured revision if it is still cached.
-   *   2. Reuse the most recently modified local cache.
-   *   3. Download CDN latest if no local cache exists.
-   */
   async ensureDefaultStubs(): Promise<string | null> {
     const lastRevision = this.context?.globalState.get<string>(StubsService.lastRevisionKey) || '';
     if (this.isCacheUsable(lastRevision)) {
@@ -64,29 +43,23 @@ export class StubsService {
       return null;
     }
 
-    const latestRevision = await this.fetchLatestRevision();
-    if (!latestRevision) {
-      logWarn('Stubs', 'Failed to fetch latest stubs revision from CDN');
+    const route = await this.routeService.resolve('');
+    if (!route) {
+      logWarn('Stubs', 'Failed to resolve latest CanMV resources from CDN');
       return null;
     }
 
-    logInfo('Stubs', `No local stubs found; downloading latest default stubs: ${latestRevision}`);
-    if (await this.downloadAndExtract(latestRevision, this.cacheDirFor(latestRevision))) {
-      return this.configureRevision(latestRevision, 'default');
+    logInfo('Stubs', `No local stubs found; downloading latest default stubs: ${route.revision}`);
+    if (await this.downloadAndExtract(route)) {
+      return this.configureRevision(route.revision, 'default');
     }
 
-    logWarn('Stubs', `Failed to download default stubs: ${latestRevision}`);
+    logWarn('Stubs', `Failed to download default stubs: ${route.revision}`);
     return null;
   }
 
-  /**
-   * Configure stubs that exactly match the connected board revision when possible.
-   *
-   * @param boardRevision Board revision used internally for matching.
-   * @returns The active stubs directory path, or null if download failed.
-   */
   async ensureBoardStubs(boardRevision: string): Promise<string | null> {
-    const revision = this.normalizeRevision(boardRevision);
+    const revision = normalizeFirmwareRevision(boardRevision);
     if (!revision) {
       logWarn('Stubs', 'Board revision unavailable; keeping default stubs');
       return this.ensureDefaultStubs();
@@ -103,48 +76,60 @@ export class StubsService {
       return null;
     }
 
-    logInfo('Stubs', `Downloading exact stubs for connected board: ${revision}`);
-    if (await this.downloadAndExtract(revision, this.cacheDirFor(revision))) {
-      return this.configureRevision(revision, 'board');
+    const route = await this.routeService.resolve(revision);
+    if (!route) {
+      logWarn('Stubs', `Unable to resolve stubs for connected board: ${revision}`);
+      return null;
+    }
+    if (!route.exact) {
+      logWarn('Stubs', `Exact board resources unavailable; using latest firmware resources: ${route.revision}`);
     }
 
-    logWarn('Stubs', `Exact board stubs unavailable; keeping current default stubs: ${revision}`);
+    if (this.isCacheUsable(route.revision)) {
+      logInfo('Stubs', `Using ${route.exact ? 'exact' : 'latest'} local stubs for connected board: ${route.revision}`);
+      return this.configureRevision(route.revision, 'board');
+    }
+
+    logInfo('Stubs', `Downloading ${route.exact ? 'exact' : 'latest'} stubs for connected board: ${route.revision}`);
+    if (await this.downloadAndExtract(route)) {
+      return this.configureRevision(route.revision, 'board');
+    }
+
+    logWarn('Stubs', `Board stubs unavailable; keeping current default stubs: ${route.revision}`);
     return null;
   }
 
-  /**
-   * Backward-compatible entry point used by commands.
-   */
   async downloadStubs(boardRevision: string): Promise<string | null> {
     return boardRevision ? this.ensureBoardStubs(boardRevision) : this.ensureDefaultStubs();
   }
 
-  /**
-   * Fetch ${baseUrl}/latest - returns the stubs revision id.
-   */
-  private async fetchLatestRevision(): Promise<string> {
-    const latestUrl = `${this.stubsBaseUrl}/latest`;
-    logInfo('Stubs', `Fetching latest stubs revision: ${latestUrl}`);
-    try {
-      const data = await this.httpGet(latestUrl);
-      const text = data.toString('utf-8').trim();
-      // Validate: should be 40 hex chars
-      if (/^[0-9a-fA-F]{40}$/.test(text)) {
-        logInfo('Stubs', `Latest stubs revision found: ${text}`);
-        return text;
+  async ensureRouteStubs(route: CanmvResourceRoute, source: 'default' | 'board'): Promise<string | null> {
+    const routeLabel = source === 'default' ? 'default' : route.exact ? 'exact' : 'latest';
+
+    if (source === 'board') {
+      this.boardRevisionRequested = route.requestedRevision || route.revision;
+      if (!route.exact) {
+        logWarn('Stubs', `Exact board resources unavailable; using latest firmware resources: ${route.revision}`);
       }
-      // Try to extract a 40-char hex hash from the response
-      const m = text.match(/\b([0-9a-fA-F]{40})\b/);
-      if (m) {
-        logInfo('Stubs', `Extracted latest stubs revision: ${m[1]}`);
-        return m[1];
-      }
-      logWarn('Stubs', `Unexpected latest response format: "${text.substring(0, 80)}"`);
-      return '';
-    } catch (err) {
-      logWarn('Stubs', `Failed to fetch latest revision: ${err}`);
-      return '';
     }
+
+    if (this.isCacheUsable(route.revision)) {
+      logInfo('Stubs', `Using ${routeLabel} local stubs: ${route.revision}`);
+      return this.configureRevision(route.revision, source);
+    }
+
+    if (!this.canAutoDownload()) {
+      logWarn('Stubs', `Stubs are not cached and auto-download is disabled: ${route.revision}`);
+      return null;
+    }
+
+    logInfo('Stubs', `Downloading ${routeLabel} stubs: ${route.revision}`);
+    if (await this.downloadAndExtract(route)) {
+      return this.configureRevision(route.revision, source);
+    }
+
+    logWarn('Stubs', `Stubs unavailable: ${route.revision}`);
+    return null;
   }
 
   private canAutoDownload(): boolean {
@@ -156,17 +141,12 @@ export class StubsService {
     return true;
   }
 
-  private normalizeRevision(revision: string): string {
-    const trimmed = (revision || '').trim();
-    return /^[0-9a-fA-F]{7,40}$/.test(trimmed) ? trimmed : '';
-  }
-
   private cacheDirFor(revision: string): string {
     return path.join(this.baseDir, revision);
   }
 
   private isCacheUsable(revision: string): boolean {
-    const normalized = this.normalizeRevision(revision);
+    const normalized = normalizeFirmwareRevision(revision);
     if (!normalized) return false;
     const cacheDir = this.cacheDirFor(normalized);
     try {
@@ -194,7 +174,7 @@ export class StubsService {
   }
 
   private async configureRevision(revision: string, source: 'default' | 'board'): Promise<string | null> {
-    const normalized = this.normalizeRevision(revision);
+    const normalized = normalizeFirmwareRevision(revision);
     if (!this.isCacheUsable(normalized)) return null;
     if (source === 'default' && this.boardRevisionRequested) {
       logInfo('Stubs', `Board-specific stubs requested; skipping default stubs switch: ${this.boardRevisionRequested}`);
@@ -208,17 +188,14 @@ export class StubsService {
     return cacheDir;
   }
 
-  /**
-   * Download ${baseUrl}/${revision}.zip and extract to cacheDir.
-   */
-  private async downloadAndExtract(revision: string, cacheDir: string): Promise<boolean> {
-    const zipUrl = `${this.stubsBaseUrl}/${revision}.zip`;
-    logInfo('Stubs', `Downloading stubs archive: ${zipUrl}`);
+  private async downloadAndExtract(route: CanmvResourceRoute): Promise<boolean> {
+    const cacheDir = this.cacheDirFor(route.revision);
+    logInfo('Stubs', `Downloading stubs archive: ${route.stubsUrl}`);
 
     try {
-      const data = await this.httpGet(zipUrl);
+      const data = await this.routeService.fetchBuffer(route.stubsUrl);
       if (!data || data.length === 0) {
-        logWarn('Stubs', `Empty response from stubs archive: ${revision}`);
+        logWarn('Stubs', `Empty response from stubs archive: ${route.revision}`);
         return false;
       }
 
@@ -235,7 +212,6 @@ export class StubsService {
         return true;
       }
 
-      // The zip may have a top-level directory — flatten it
       const moved = this.flattenIfNeeded(cacheDir);
       if (moved) {
         logInfo('Stubs', `Flattened nested stubs directory: ${cacheDir}`);
@@ -243,21 +219,16 @@ export class StubsService {
       }
 
       this.cleanupEmpty(cacheDir);
-      logWarn('Stubs', `Extracted archive did not contain .pyi files: ${revision}`);
+      logWarn('Stubs', `Extracted archive did not contain .pyi files: ${route.revision}`);
       return false;
     } catch (err) {
-      logError('Stubs', `Download/extract failed for ${revision}: ${err}`);
+      logError('Stubs', `Download/extract failed for ${route.revision}: ${err}`);
       this.cleanupEmpty(cacheDir);
       return false;
     }
   }
 
-  /**
-   * Configure Pylance to use the given stubs directory.
-   * Replaces only the CanMV-owned stubs path in python.analysis.extraPaths.
-   */
   private async configurePylance(stubsDir: string): Promise<void> {
-    // Use the python.analysis sub-section directly (not python → analysis object)
     const config = vscode.workspace.getConfiguration('python.analysis');
     const currentExtraPaths = config.get<string[]>('extraPaths') || [];
     const currentStubPath = config.get<string>('stubPath') || '';
@@ -271,7 +242,6 @@ export class StubsService {
       return;
     }
 
-    // Try workspace-level first, fall back to global
     for (const target of [vscode.ConfigurationTarget.Workspace, vscode.ConfigurationTarget.Global]) {
       try {
         if (extraPathsChanged) {
@@ -286,8 +256,8 @@ export class StubsService {
           t('CanMV: Pylance stubs configured. Reload window for full effect.')
         );
         return;
-      } catch (err) {
-        // Workspace may not be open — try global
+      } catch {
+        // Workspace may not be open; try global.
       }
     }
 
@@ -344,41 +314,6 @@ export class StubsService {
     return left.length === right.length && left.every((value, index) => value === right[index]);
   }
 
-  // ── HTTP Helpers ──
-
-  /**
-   * HTTP GET — returns response body as Buffer, or throws on non-2xx.
-   */
-  private httpGet(url: string): Promise<Buffer> {
-    return new Promise((resolve, reject) => {
-      const get = url.startsWith('https') ? https.get : http.get;
-      const req = get(url, { timeout: 30000 }, (res) => {
-        // Follow redirects (up to 3)
-        if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
-          const redirectUrl = res.headers.location;
-          if (redirectUrl) {
-            this.httpGet(redirectUrl).then(resolve).catch(reject);
-            return;
-          }
-        }
-        if (res.statusCode !== 200) {
-          res.resume();
-          reject(new Error(`HTTP ${res.statusCode}`));
-          return;
-        }
-        const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('end', () => resolve(Buffer.concat(chunks)));
-        res.on('error', reject);
-      });
-      req.on('error', reject);
-      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
-    });
-  }
-
-  /**
-   * Extract a .tar.gz or .zip archive to targetDir using the bundled Go backend.
-   */
   private async extractArchive(archivePath: string, targetDir: string): Promise<void> {
     if (!this.context) {
       throw new Error('CanMV backend unavailable for stubs archive extraction');
@@ -402,35 +337,21 @@ export class StubsService {
     });
   }
 
-  /**
-   * If extraction created a single subdirectory containing .pyi files,
-   * move them up to targetDir (flatten).
-   * Returns true if .pyi files are now present in targetDir.
-   */
   private flattenIfNeeded(targetDir: string): boolean {
     try {
       const entries = fs.readdirSync(targetDir, { withFileTypes: true });
       const pyis = entries.filter(e => e.isFile() && e.name.endsWith('.pyi'));
-      if (pyis.length > 0) return true; // already flat
+      if (pyis.length > 0) return true;
 
-      // Look for a single subdirectory that might contain stubs
       const subdirs = entries.filter(e => e.isDirectory());
       for (const sub of subdirs) {
         const subPath = path.join(targetDir, sub.name);
         const subEntries = fs.readdirSync(subPath, { withFileTypes: true });
         const subPyis = subEntries.filter(e => e.isFile() && e.name.endsWith('.pyi'));
         if (subPyis.length > 0) {
-          // Move all files from subdirectory up
           for (const entry of subEntries) {
-            const src = path.join(subPath, entry.name);
-            const dest = path.join(targetDir, entry.name);
-            if (entry.isDirectory()) {
-              fs.renameSync(src, dest);
-            } else {
-              fs.renameSync(src, dest);
-            }
+            fs.renameSync(path.join(subPath, entry.name), path.join(targetDir, entry.name));
           }
-          // Remove now-empty subdirectory
           try { fs.rmdirSync(subPath); } catch { /* ignore */ }
           return true;
         }
@@ -441,9 +362,6 @@ export class StubsService {
     return false;
   }
 
-  /**
-   * Remove targetDir if it's empty (no .pyi files).
-   */
   private cleanupEmpty(targetDir: string): void {
     try {
       if (fs.existsSync(targetDir)) {

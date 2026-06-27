@@ -7,6 +7,7 @@
   "canmv.command.startPreview": "CanMV: Enable Preview",
   "canmv.command.stopPreview": "CanMV: Disable Preview",
   "canmv.command.runRemoteFile": "CanMV: Run Remote File",
+  "canmv.command.runExampleFile": "CanMV: Run Example File",
   "canmv.command.openTool": "CanMV: Open Tool",
   "canmv.command.openThresholdEditor": "CanMV: Threshold Editor",
   "canmv.command.refreshExplorer": "CanMV: Refresh Explorer",
@@ -20,9 +21,13 @@
   "canmv.command.uploadFiles": "CanMV: Upload Files...",
   "canmv.command.uploadFolder": "CanMV: Upload Folder...",
   "canmv.command.downloadRemoteItem": "CanMV: Download...",
+  "canmv.command.refreshExamples": "CanMV: Refresh Examples",
+  "canmv.command.revealExamples": "CanMV: Reveal Examples",
+  "canmv.command.openExampleFile": "CanMV: Open Example File",
   "canmv.view.controls": "Controls",
   "canmv.view.toolbox": "Toolbox",
   "canmv.view.device": "Device",
+  "canmv.view.examples": "Examples",
   "canmv.view.terminal": "CanMV Terminal",
   "canmv.submenu.editorMenu": "CanMV",
   "canmv.configuration.title": "CanMV",
@@ -30,6 +35,5 @@
   "canmv.configuration.baudRate.description": "Serial baud rate (default: 12M for K230 USB CDC). Only used when serialPath is manually set.",
   "canmv.configuration.backendPath.description": "Path to a CanMV backend executable. Leave empty to use the backend bundled with the extension.",
   "canmv.configuration.autoReconnect.description": "Automatically reconnect on unexpected disconnect",
-  "canmv.configuration.stubsAutoDownload.description": "Automatically download K230 stubs for Pylance on board connect",
-  "canmv.configuration.stubsBaseUrl.description": "Base URL for downloading K230 MicroPython stubs"
+  "canmv.configuration.stubsAutoDownload.description": "Automatically download K230 stubs and examples on board connect"
 }

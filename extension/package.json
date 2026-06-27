@@ -44,6 +44,7 @@
     "onCommand:canmv.startPreview",
     "onCommand:canmv.stopPreview",
     "onCommand:canmv.runRemoteFile",
+    "onCommand:canmv.runExampleFile",
     "onCommand:canmv.openTool",
     "onCommand:canmv.openThresholdEditor",
     "onCommand:canmv.newRemoteFile",
@@ -56,6 +57,7 @@
     "onView:canmv.controls",
     "onView:canmv.toolbox",
     "onView:canmv.explorer",
+    "onView:canmv.examples",
     "onView:canmv.terminalView"
   ],
   "main": "./out/extension.js",
@@ -99,6 +101,12 @@
       {
         "command": "canmv.runRemoteFile",
         "title": "%canmv.command.runRemoteFile%",
+        "icon": "$(play)",
+        "enablement": "canmv.connected && canmv.boardReady && !canmv.scriptRunning && !canmv.connectionBusy && !canmv.scriptBusy"
+      },
+      {
+        "command": "canmv.runExampleFile",
+        "title": "%canmv.command.runExampleFile%",
         "icon": "$(play)",
         "enablement": "canmv.connected && canmv.boardReady && !canmv.scriptRunning && !canmv.connectionBusy && !canmv.scriptBusy"
       },
@@ -169,6 +177,21 @@
         "command": "canmv.downloadRemoteItem",
         "title": "%canmv.command.downloadRemoteItem%",
         "icon": "$(cloud-download)"
+      },
+      {
+        "command": "canmv.refreshExamples",
+        "title": "%canmv.command.refreshExamples%",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "canmv.revealExamples",
+        "title": "%canmv.command.revealExamples%",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "canmv.openExampleFile",
+        "title": "%canmv.command.openExampleFile%",
+        "icon": "$(file)"
       }
     ],
     "views": {
@@ -188,6 +211,11 @@
           "id": "canmv.explorer",
           "name": "%canmv.view.device%",
           "icon": "$(folder)"
+        },
+        {
+          "id": "canmv.examples",
+          "name": "%canmv.view.examples%",
+          "icon": "$(library)"
         }
       ],
       "canmv-terminal": [
@@ -240,6 +268,16 @@
           "command": "canmv.refreshExplorer",
           "when": "view == canmv.explorer",
           "group": "navigation@1"
+        },
+        {
+          "command": "canmv.refreshExamples",
+          "when": "view == canmv.examples",
+          "group": "navigation@1"
+        },
+        {
+          "command": "canmv.revealExamples",
+          "when": "view == canmv.examples",
+          "group": "navigation@2"
         },
         {
           "command": "canmv.downloadRemoteItem",
@@ -307,6 +345,21 @@
           "command": "canmv.downloadRemoteItem",
           "when": "view == canmv.explorer && canmv.remoteFilesAvailable && (viewItem == mountRoot || viewItem == directory || viewItem == file || viewItem == pythonFile)",
           "group": "3_transfer@1"
+        },
+        {
+          "command": "canmv.runExampleFile",
+          "when": "view == canmv.examples && viewItem == localExamplePythonFile && canmv.connected && canmv.boardReady && !canmv.scriptRunning && !canmv.connectionBusy && !canmv.scriptBusy",
+          "group": "inline@1"
+        },
+        {
+          "command": "canmv.openExampleFile",
+          "when": "view == canmv.examples && (viewItem == localExamplePythonFile || viewItem == localExampleTextFile)",
+          "group": "inline@2"
+        },
+        {
+          "command": "canmv.revealExamples",
+          "when": "view == canmv.examples && (viewItem == localExampleFile || viewItem == localExamplePythonFile || viewItem == localExampleTextFile || viewItem == localExampleDirectory)",
+          "group": "navigation@1"
         }
       ],
       "canmv.editorMenu": [
@@ -382,11 +435,6 @@
           "type": "boolean",
           "default": true,
           "description": "%canmv.configuration.stubsAutoDownload.description%"
-        },
-        "canmv.stubsBaseUrl": {
-          "type": "string",
-          "default": "https://download.kendryte.com/developer/tools/canmv_ide_k230/canmv_k230_stubs",
-          "description": "%canmv.configuration.stubsBaseUrl.description%"
         }
       }
     }

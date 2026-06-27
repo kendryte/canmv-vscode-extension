@@ -1504,7 +1504,7 @@ func firmwareVersionForUser(fwFull string) string {
 }
 
 func firmwareVersionPartFromFull(fwFull string) string {
-	re := regexp.MustCompile(`\b(v[0-9]+(?:\.[0-9]+){0,2}(?:-[0-9]+)?(?:-g?[0-9a-fA-F]{7,40})?)\b`)
+	re := regexp.MustCompile(`\b(v[0-9]+(?:\.[0-9]+){0,2}(?:-[A-Za-z][0-9A-Za-z.-]*)?(?:-[0-9]+)?(?:-g?[0-9a-fA-F]{7,40})?)\b`)
 	match := re.FindStringSubmatch(fwFull)
 	if len(match) > 1 {
 		return match[1]
@@ -1514,12 +1514,12 @@ func firmwareVersionPartFromFull(fwFull string) string {
 
 func firmwareCommitFromFull(fwFull string) string {
 	fw := strings.TrimSpace(fwFull)
-	re := regexp.MustCompile(`-g([0-9a-fA-F]{7,40})\b`)
+	re := regexp.MustCompile(`-g([0-9a-fA-F]{40})\b`)
 	match := re.FindStringSubmatch(fw)
 	if len(match) > 1 {
 		return match[1]
 	}
-	re = regexp.MustCompile(`-([0-9a-fA-F]{7,40})\b`)
+	re = regexp.MustCompile(`-([0-9a-fA-F]{40})\b`)
 	match = re.FindStringSubmatch(fw)
 	if len(match) > 1 {
 		return match[1]

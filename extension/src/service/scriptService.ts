@@ -42,9 +42,13 @@ export class ScriptService {
       return false;
     }
 
-    const script = editor.document.getText();
     const filename = editor.document.fileName.split('/').pop() || 'script.py';
-    logInfo('Script', `Run active file: ${filename} (${script.length}B)`);
+    const script = editor.document.getText();
+    return this.runScriptContent(script, filename);
+  }
+
+  async runScriptContent(script: string, filename = 'script.py'): Promise<boolean> {
+    logInfo('Script', `Run script: ${filename} (${script.length}B)`);
     const req = createRequest(Methods.runScript, { script });
     const result = await this.requester.request(req);
 

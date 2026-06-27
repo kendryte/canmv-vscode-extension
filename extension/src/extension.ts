@@ -11,14 +11,18 @@ import { ScriptService } from './service/scriptService';
 import { VideoService } from './service/videoService';
 import { FileService } from './service/fileService';
 import { StubsService } from './service/stubsService';
+import { CanmvResourceService } from './service/canmvResourceService';
 import { RemoteMirrorService } from './service/remoteMirrorService';
 import { CanmvExplorer } from './explorer/treeProvider';
 import { FileTreeItem } from './explorer/fileItem';
+import { ExamplesTreeProvider, ExampleTreeItem } from './explorer/examplesTreeProvider';
 import { BoardDetector } from './backend/detector';
 import { CanmvFileSystemProvider } from './filesystem/provider';
 import { ToolRegistry, ToolHost } from './webview/ToolHost';
 import { CanmvControlViewProvider } from './webview/CanmvControlViewProvider';
 import { ToolboxTreeProvider } from './webview/ToolboxTreeProvider';
+import { ExamplesService } from './service/examplesService';
+import { CanmvResourceRouteService } from './service/resourceRouteService';
 import { ThresholdEditorPanel, type ThresholdEditorConfig, type ThresholdMode } from './webview/ThresholdEditorPanel';
 import { Methods, createRequest } from './protocol/methods';
 import { isResponse } from './protocol/types';
@@ -31,6 +35,8 @@ let thresholdEditorPanel: ThresholdEditorPanel | undefined;
 let terminalViewProvider: TerminalViewProvider | undefined;
 let backend: NativeBackend | undefined;
 let stubsService: StubsService | undefined;
+let examplesService: ExamplesService | undefined;
+let canmvResourceService: CanmvResourceService | undefined;
 
 type VirtualTouchState = {
   supported: boolean;
@@ -59,9 +65,12 @@ export function activate(context: vscode.ExtensionContext) {
     requestTimeout: 10000,
   });
   context.subscriptions.push(session);
-  stubsService = new StubsService(context);
-  void stubsService.ensureDefaultStubs().catch((err) => {
-    logError('Stubs', `Default setup error: ${err}`);
+  const resourceRouteService = new CanmvResourceRouteService();
+  examplesService = new ExamplesService(context, resourceRouteService);
+  stubsService = new StubsService(context, resourceRouteService);
+  canmvResourceService = new CanmvResourceService(resourceRouteService, stubsService, examplesService);
+  void canmvResourceService.ensureDefaultResources().catch((err) => {
+    logError('Resources', `Default setup error: ${err}`);
   });
   context.subscriptions.push(statusItem);
 
@@ -80,6 +89,8 @@ export function activate(context: vscode.ExtensionContext) {
     () => remoteFilesAvailable(),
     () => remoteFilesUnavailableMessage(),
   );
+  const examplesTreeProvider = new ExamplesTreeProvider(examplesService);
+  context.subscriptions.push(vscode.window.registerTreeDataProvider('canmv.examples', examplesTreeProvider));
   let connected = false;
   let disconnected = true;
   let scriptRunning = false;
@@ -1290,6 +1301,33 @@ export function activate(context: vscode.ExtensionContext) {
       if (!path || !path.endsWith('.py')) return;
       await runRemotePath(path);
     }),
+    vscode.commands.registerCommand('canmv.runExampleFile', async (item?: ExampleTreeItem | vscode.Uri) => {
+      const fsPath = item instanceof vscode.Uri ? item.fsPath : item?.fsPath;
+      if (!fsPath || !fsPath.toLowerCase().endsWith('.py')) return;
+      if (!beginScriptOperation()) return;
+      let started = false;
+      try {
+        if (!(await ensureCanStartScript())) return;
+        await stopPreviewBeforeScript();
+        const script = fs.readFileSync(fsPath, 'utf8');
+        started = await scriptService.runScriptContent(script, path.basename(fsPath));
+        if (!started) {
+          setScriptRunningContext(false);
+        } else {
+          setScriptRunningContext(true);
+          startPreviewForScript();
+          showScriptViews();
+        }
+      } catch (err) {
+        if (!started) {
+          setScriptRunningContext(false);
+        }
+        logError('Script', `Run example failed: ${err}`);
+        vscode.window.showErrorMessage(t('CanMV: {message}', { message: err instanceof Error ? err.message : String(err) }));
+      } finally {
+        endScriptOperation();
+      }
+    }),
     vscode.commands.registerCommand('canmv.openRemoteFile', async (arg?: vscode.Uri | FileTreeItem) => {
       const path = remotePathFromCommandArg(arg);
       if (!path) return;
@@ -1564,6 +1602,29 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canmv.refreshExplorer', () => {
       refreshExplorer();
     }),
+    vscode.commands.registerCommand('canmv.refreshExamples', async () => {
+      try {
+        await canmvResourceService?.ensureDefaultExamples();
+      } catch (err) {
+        logError('Examples', `Refresh examples failed: ${err}`);
+      }
+      examplesService?.refresh();
+    }),
+    vscode.commands.registerCommand('canmv.openExampleFile', async (item?: ExampleTreeItem | vscode.Uri) => {
+      const fsPath = item instanceof vscode.Uri ? item.fsPath : item?.fsPath;
+      if (!fsPath) return;
+      const content = fs.readFileSync(fsPath, 'utf8');
+      const doc = await vscode.workspace.openTextDocument({
+        content,
+        language: languageForExampleFile(fsPath),
+      });
+      await vscode.window.showTextDocument(doc, { preview: true });
+    }),
+    vscode.commands.registerCommand('canmv.revealExamples', async (item?: ExampleTreeItem) => {
+      const target = item?.fsPath || examplesService?.activeExamplesDir() || examplesService?.examplesRootDir();
+      if (!target) return;
+      await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(target));
+    }),
   ];
   context.subscriptions.push(...disposables);
   context.subscriptions.push(vscode.workspace.onDidSaveTextDocument((document) => {
@@ -1708,6 +1769,23 @@ function shortCommit(commit?: string): string {
   return commit ? commit.slice(0, 12) : '';
 }
 
+function languageForExampleFile(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.py': return 'python';
+    case '.json': return 'json';
+    case '.md': return 'markdown';
+    case '.yml':
+    case '.yaml': return 'yaml';
+    case '.sh': return 'shellscript';
+    case '.c':
+    case '.h': return 'c';
+    case '.cpp':
+    case '.hpp': return 'cpp';
+    default: return 'plaintext';
+  }
+}
+
 export async function deactivate() {
   if (backend) {
     backend.disposeSync();
@@ -1733,15 +1811,19 @@ async function fetchCommitFromBoard(session: Session): Promise<string> {
 
 async function configureBoardStubs(session: Session): Promise<void> {
   const commitId = await fetchCommitFromBoard(session);
-  await configureStubs(stubsService!, commitId);
+  await configureResources(canmvResourceService!, commitId);
 }
 
-async function configureStubs(svc: StubsService, commitId: string): Promise<void> {
+async function configureResources(svc: CanmvResourceService, commitId: string): Promise<void> {
   if (!commitId) {
     logInfo('Stubs', 'No board revision available; using default stubs');
   }
   try {
-    await svc.downloadStubs(commitId);
+    if (commitId) {
+      await svc.ensureBoardResources(commitId);
+    } else {
+      await svc.ensureDefaultResources();
+    }
   } catch (err) {
     logError('Stubs', `Setup error: ${err}`);
   }

@@ -7,6 +7,7 @@
   "canmv.command.startPreview": "CanMV: 启用预览",
   "canmv.command.stopPreview": "CanMV: 禁用预览",
   "canmv.command.runRemoteFile": "CanMV: 运行远程文件",
+  "canmv.command.runExampleFile": "CanMV: 运行示例文件",
   "canmv.command.openTool": "CanMV: 打开工具",
   "canmv.command.openThresholdEditor": "CanMV: 阈值编辑器",
   "canmv.command.refreshExplorer": "CanMV: 刷新资源管理器",
@@ -20,9 +21,13 @@
   "canmv.command.uploadFiles": "CanMV: 上传文件...",
   "canmv.command.uploadFolder": "CanMV: 上传文件夹...",
   "canmv.command.downloadRemoteItem": "CanMV: 下载...",
+  "canmv.command.refreshExamples": "CanMV: 刷新示例",
+  "canmv.command.revealExamples": "CanMV: 在文件管理器中显示示例",
+  "canmv.command.openExampleFile": "CanMV: 打开示例文件",
   "canmv.view.controls": "控制",
   "canmv.view.toolbox": "工具箱",
   "canmv.view.device": "设备",
+  "canmv.view.examples": "示例",
   "canmv.view.terminal": "CanMV 终端",
   "canmv.submenu.editorMenu": "CanMV",
   "canmv.configuration.title": "CanMV",
@@ -30,6 +35,5 @@
   "canmv.configuration.baudRate.description": "串口波特率（默认：K230 USB CDC 使用 12M）。仅在手动设置 serialPath 时使用。",
   "canmv.configuration.backendPath.description": "CanMV 后端可执行文件路径。留空时使用扩展内置的后端。",
   "canmv.configuration.autoReconnect.description": "意外断开连接后自动重连",
-  "canmv.configuration.stubsAutoDownload.description": "连接开发板时自动下载用于 Pylance 的 K230 代码提示文件",
-  "canmv.configuration.stubsBaseUrl.description": "下载 K230 MicroPython 代码提示文件的基础 URL"
+  "canmv.configuration.stubsAutoDownload.description": "连接开发板时自动下载 K230 代码提示文件和示例"
 }

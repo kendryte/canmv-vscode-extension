@@ -134,7 +134,6 @@ The CanMV Terminal panel keeps recent scrollback, mirrors board/script output, a
 | `canmv.backendPath` | `""` | Path to a custom `canmv-backend` executable. Leave empty to use the bundled backend. |
 | `canmv.autoReconnect` | `true` | Automatically reconnect after an unexpected disconnect. |
 | `canmv.stubsAutoDownload` | `true` | Automatically download K230 MicroPython stubs when needed. |
-| `canmv.stubsBaseUrl` | Kendryte stubs CDN | Base URL used to download K230 MicroPython stubs. |
 
 The backend path can also be overridden with the `CANMV_BACKEND_PATH` environment variable.
 
