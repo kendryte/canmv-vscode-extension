@@ -147,6 +147,15 @@ func Open(portName string, baudRate int) (*Board, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Force a DTR transition (deassert -> assert) so the device receives a CDC
+	// SET_CONTROL_LINE_STATE with DTR asserted. Linux/Windows CDC drivers send
+	// this automatically on open, but macOS only emits it on a DTR *change*: a
+	// single SetDTR(true) can be a no-op there, leaving the firmware's DTR state
+	// false. Since the firmware gates every USBDBG reply on DTR, that makes it
+	// stay silent and capability negotiation falls back to legacy. The explicit
+	// low->high edge guarantees the asserted control request is delivered.
+	_ = port.SetDTR(false)
+	time.Sleep(50 * time.Millisecond)
 	_ = port.SetDTR(true)
 	board := &Board{port: port}
 	_, _ = board.DrainInput(200*time.Millisecond, 20)
