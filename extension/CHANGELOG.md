@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0
+
+- Added video recording functionality with UI controls for capturing and managing recordings from the device
+- Fixed stubsBaseUrl to correct download link for MicroPython stubs
+
 ## 0.5.0
 
 - Added `writeFull` for reliable serial writes that retry until all bytes are flushed
