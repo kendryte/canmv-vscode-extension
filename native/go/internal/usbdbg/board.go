@@ -309,11 +309,11 @@ func (b *Board) ScriptExec(script []byte) error {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if _, err := b.port.Write(header); err != nil {
+	if err := writeFull(b.port, header); err != nil {
 		return err
 	}
 	time.Sleep(500 * time.Millisecond)
-	if _, err := b.port.Write(data); err != nil {
+	if err := writeFull(b.port, data); err != nil {
 		return err
 	}
 	time.Sleep(500 * time.Millisecond)
@@ -812,8 +812,29 @@ func (b *Board) writeCommandLocked(opcode byte, responseField uint32, payload []
 	cmd[1] = opcode
 	binary.LittleEndian.PutUint32(cmd[2:], responseField)
 	copy(cmd[6:], payload)
-	_, err := b.port.Write(cmd)
-	return err
+	return writeFull(b.port, cmd)
+}
+
+// writeFull writes all of data, looping over short writes. The unix serial
+// Write (shared by Linux and macOS) is a single write(2) syscall that may
+// return a short count: macOS USB-CDC returns partial writes when the tty
+// output buffer fills, whereas Linux blocks until fully queued and Windows
+// waits for completion via overlapped I/O. A truncated command header or
+// payload desyncs the device's frame parser, so all bytes must be written.
+func writeFull(port serial.Port, data []byte) error {
+	for len(data) > 0 {
+		n, err := port.Write(data)
+		if n > 0 {
+			data = data[n:]
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 && len(data) > 0 {
+			return fmt.Errorf("short write: device stopped accepting data with %d bytes left", len(data))
+		}
+	}
+	return nil
 }
 
 func readExact(port serial.Port, data []byte) error {
