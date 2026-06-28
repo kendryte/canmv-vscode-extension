@@ -12,15 +12,16 @@ The CanMV for Visual Studio Code extension brings CanMV K230 board development i
 - Auto-detect supported boards by USB VID/PID `1209:abd1`, with a manual serial path override when needed.
 - Use legacy and v2 board protocol support through backend capability negotiation.
 - Run the active Python file on the board, stop a running script, or run a Python file directly from the device tree.
-- Preview live IDE framebuffer images with fit/original-size modes, rotation, PNG capture, FPS display, and RGB/grayscale/LAB/YUV histograms with hover readouts.
+- Preview live IDE framebuffer images with fit/original-size modes, rotation, PNG capture, pixel RGB picking, ROI histogram sampling, video recording, FPS display, and RGB/grayscale/LAB/YUV histograms with hover readouts.
 - Tune grayscale and LAB thresholds with the Threshold Editor, including image file loading, Frame Buffer capture, tuple copy, and selected tuple apply.
 - Send virtual touch clicks from the preview when the connected firmware reports virtual touch support.
 - Browse mounted device storage, including `/sdcard`, `/data`, and `/udisk`.
 - Create, rename, delete, upload, download, open, edit, and auto-sync remote files.
 - Save the active editor directly as `/sdcard/main.py` or `/sdcard/boot.py`.
 - Use the CanMV Terminal panel for board output, REPL input, Ctrl-C script interrupt, log clearing, and log export.
+- Browse downloaded official CanMV examples, open examples as editable unsaved buffers, reveal them on disk, and run Python examples on the board.
 - Expose a CanMV MCP server for compatible VS Code AI clients, with board detection, connection, script, terminal, remote filesystem, examples, and stubs tools.
-- Configure K230 MicroPython stubs for Pylance, with automatic download and local cache reuse.
+- Resolve firmware resources through full commit-hash manifests, then configure matching K230 MicroPython stubs for Pylance and download matching examples.
 - Inspect extension, backend, stubs, preview, and transfer logs in the `CanMV` Output channel.
 
 ## Requirements
@@ -37,7 +38,7 @@ The CanMV for Visual Studio Code extension brings CanMV K230 board development i
 3. Open a Python file.
 4. Run `CanMV: Run Active Python Script` from the Command Palette, the editor run button, or the editor context menu.
 5. Use the CanMV activity bar views for board status, tools, and device files.
-6. Open the `CanMV Terminal` panel to view output or enter REPL commands when no script is running.
+6. Open the Examples view to browse downloaded examples, or open the `CanMV Terminal` panel to view output and enter REPL commands when no script is running.
 
 ## Main Views
 
@@ -46,13 +47,16 @@ The CanMV for Visual Studio Code extension brings CanMV K230 board development i
 | Controls | CanMV activity bar | Shows connection state, board status, and script state. |
 | Toolbox | CanMV activity bar | Opens extension tools such as Preview and Threshold Editor. |
 | Device | CanMV activity bar | Browses and manages files on the connected board. |
+| Examples | CanMV activity bar | Browses locally cached official examples and models downloaded for the current firmware resources. |
 | CanMV Terminal | Panel | Shows board output and accepts REPL input when available. |
 
 ## Common Workflows
 
 ### Connect to a Board
 
-Run `CanMV: Connect Board`. The extension starts the backend, detects the board, performs the board handshake, updates the status bar, refreshes the Device tree, and configures Python stubs when possible.
+Run `CanMV: Connect Board`. The extension starts the backend, detects the board, performs the board handshake, updates the status bar, refreshes the Device tree, and configures firmware-matched resources when possible.
+
+On activation, the extension resolves `firmware/latest` and uses that firmware manifest to select default stubs and examples. After a board connects, it resolves `firmware/<full-commit-hash>/manifest.json` and switches to resources matching the connected firmware. If the exact manifest is unavailable, the extension falls back to the latest manifest and then to usable local caches.
 
 If auto-detection does not find the board, set `canmv.serialPath` to a serial device path such as `/dev/ttyACM0`. When `canmv.serialPath` is set, `canmv.baudRate` is used for the connection.
 
@@ -71,9 +75,12 @@ The Preview tool supports:
 - Fit-to-window and original-size viewing.
 - 90-degree rotation.
 - Saving the current frame as PNG.
+- Picking RGB pixel values from the current frame.
 - FPS and frame count display.
 - RGB, grayscale, LAB, and YUV histograms.
+- Selecting an ROI rectangle so histograms are calculated from only that image region.
 - Histogram hover readouts for inspecting bin values.
+- Recording preview frames to video. The recorder saves MP4 when the VS Code webview runtime supports MP4 encoding and falls back to WebM otherwise.
 - Virtual touch click forwarding when supported by the board firmware.
 
 Preview starts automatically after a script begins when the Preview tool is open and preview is not manually disabled.
@@ -89,6 +96,20 @@ You can copy the generated tuple, or select an existing grayscale/LAB tuple in t
 Open the Device view after connecting. Directories can be expanded, and files can be opened from the tree. Right-click a directory or mounted root to create files/folders, upload files, or upload a folder. Right-click files or folders to download, rename, or delete them.
 
 Python files opened from the Device tree are mirrored into an extension-managed temp folder outside the current workspace. Saving a mirrored file syncs it back to the board automatically. The extension also updates `python.analysis.extraPaths` so Pylance can resolve imports from the mirror.
+
+### Browse Examples
+
+Open the Examples view in the CanMV activity bar. The extension downloads examples from the same firmware manifest used for stubs and stores them locally. The view shows the active cached examples package, including `examples/` and `models/` content when present.
+
+Opening an example creates an editable unsaved editor. This lets you experiment freely while keeping the downloaded cache unchanged; use Save As to write a copy into your workspace. Python example files can also be run directly on the connected board from the Examples tree.
+
+Examples are cached under:
+
+```text
+~/.kendryte/k230_canmv_examples/<examples-id>
+```
+
+Use `CanMV: Refresh Examples` to resolve the latest firmware resources and download examples when needed. Use `CanMV: Reveal Examples` to open the active examples cache in the OS file manager.
 
 ### Save Startup Files
 
@@ -141,9 +162,13 @@ For best script generation, the MCP server instructs AI clients to call `canmv_r
 | `CanMV: Enable Preview` | Enable/open live frame preview. |
 | `CanMV: Disable Preview` | Stop live frame preview and keep it manually disabled. |
 | `CanMV: Run Remote File` | Run a Python file selected in the Device tree. |
+| `CanMV: Run Example File` | Run a Python file selected in the Examples tree. |
 | `CanMV: Open Tool` | Pick and open a CanMV tool. |
 | `CanMV: Threshold Editor` | Open the Threshold Editor tool. |
 | `CanMV: Refresh Explorer` | Refresh the Device tree. |
+| `CanMV: Refresh Examples` | Resolve and refresh cached examples. |
+| `CanMV: Reveal Examples` | Reveal the examples cache in the OS file manager. |
+| `CanMV: Open Example File` | Open a cached example as an editable unsaved buffer. |
 | `CanMV: Run Active File on K230` | Run the active editor through the K230 workflow. |
 | `CanMV: Save as main.py` | Save the active editor to `/sdcard/main.py`. |
 | `CanMV: Save as boot.py` | Save the active editor to `/sdcard/boot.py`. |
@@ -163,13 +188,33 @@ For best script generation, the MCP server instructs AI clients to call `canmv_r
 | `canmv.baudRate` | `12000000` | Serial baud rate used when `canmv.serialPath` is set manually. |
 | `canmv.backendPath` | `""` | Path to a custom `canmv-backend` executable. Leave empty to use the bundled backend. |
 | `canmv.autoReconnect` | `true` | Automatically reconnect after an unexpected disconnect. |
-| `canmv.stubsAutoDownload` | `true` | Automatically download K230 MicroPython stubs when needed. |
+| `canmv.stubsAutoDownload` | `true` | Automatically download K230 MicroPython stubs and examples when needed. |
 
 The backend path can also be overridden with the `CANMV_BACKEND_PATH` environment variable.
 
-## Python Stubs
+## Firmware Resources, Examples, and Python Stubs
 
-The extension configures Pylance stubs for K230 MicroPython APIs. On activation it reuses the last cached stubs revision, then the newest local cache, and finally downloads the latest revision when `canmv.stubsAutoDownload` is enabled. After a board connects, it attempts to switch to stubs matching the connected board revision.
+The extension resolves stubs and examples through firmware manifests published under:
+
+```text
+https://download.kendryte.com/developer/tools/canmv_vscode_extension/
+```
+
+Resource routing starts from a firmware manifest:
+
+```text
+firmware/latest
+firmware/<full-40-character-commit-hash>/manifest.json
+```
+
+The manifest points to the matching stubs zip and examples zip. Stubs use the full firmware commit hash so Pylance can match the connected firmware exactly. Examples use a content hash ID because examples do not change on every firmware build.
+
+Firmware route metadata is cached under:
+
+```text
+~/.kendryte/k230_canmv_resources/firmware/latest
+~/.kendryte/k230_canmv_resources/firmware/<revision>/manifest.json
+```
 
 Stubs are cached under:
 
@@ -177,7 +222,15 @@ Stubs are cached under:
 ~/.kendryte/k230_canmv_stubs/<revision>
 ```
 
-The extension writes `python.analysis.stubPath` to the workspace when possible, with global settings as a fallback.
+Examples are cached under:
+
+```text
+~/.kendryte/k230_canmv_examples/<examples-id>
+```
+
+On activation, the extension resolves the latest firmware resources, reuses local caches when available, and downloads missing stubs/examples when `canmv.stubsAutoDownload` is enabled. After a board connects, it switches to the exact firmware route when the board reports a full firmware commit hash.
+
+The extension configures Pylance with `python.analysis.extraPaths` pointing at the active stubs directory. Older `python.analysis.stubPath` values managed by the extension are updated only when needed for compatibility.
 
 ## Backend
 
@@ -236,7 +289,8 @@ npm run package:vsix
 - Preview is empty: make sure the running script publishes IDE framebuffer data.
 - Preview stops updating: disable and re-enable Preview, or stop and restart the script.
 - Remote file edits are not syncing: save the mirrored local file and check the `CanMV` Output channel for transfer errors.
-- Python completions are missing: confirm Pylance is installed, reload Visual Studio Code after stubs are configured, and check `python.analysis.stubPath`.
+- Examples are missing: run `CanMV: Refresh Examples`, connect once with auto-download enabled, and check the `CanMV` Output channel for resource download errors.
+- Python completions are missing: confirm Pylance is installed, reload Visual Studio Code after stubs are configured, and check `python.analysis.extraPaths`.
 - File operations fail: refresh the Device tree and inspect the `CanMV` Output channel.
 
 ## Repository
