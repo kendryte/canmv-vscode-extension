@@ -67,6 +67,8 @@ const DEFAULT_LIST_LIMIT = 200;
 const MAX_LIST_LIMIT = 1000;
 const DEFAULT_SEARCH_LIMIT = 30;
 const MAX_SEARCH_LIMIT = 100;
+const IDLE_DISCONNECT_MS = readNumberEnv('CANMV_MCP_IDLE_DISCONNECT_MS', 120000);
+const DEFAULT_HOST_OUTPUT_DIR = process.env.CANMV_MCP_OUTPUT_DIR || path.join(os.tmpdir(), 'canmv-mcp');
 
 class CanmvMcpServer {
   private lineBuffer = '';
@@ -78,37 +80,7 @@ class CanmvMcpServer {
   private readonly terminalOutputLimit = 128 * 1024;
   private latestFrame: FrameInfo | undefined;
   private frameWaiters: Array<(frame: FrameInfo) => void> = [];
-  private readonly autoDisconnectToolNames = new Set([
-    'canmv_analyze_capabilities',
-    'canmv_detect_boards',
-    'canmv_connect_board',
-    'canmv_disconnect_board',
-    'canmv_board_info',
-    'canmv_firmware_info',
-    'canmv_board_capabilities',
-    'canmv_run_script',
-    'canmv_write_and_run_script',
-    'canmv_stop_script',
-    'canmv_script_running',
-    'canmv_terminal_input',
-    'canmv_terminal_output',
-    'canmv_start_preview',
-    'canmv_stop_preview',
-    'canmv_get_latest_frame',
-    'canmv_virtual_touch_status',
-    'canmv_virtual_touch_tap',
-    'canmv_list_dir',
-    'canmv_stat_file',
-    'canmv_read_file',
-    'canmv_write_file',
-    'canmv_execute_file',
-    'canmv_save_main_py',
-    'canmv_save_boot_py',
-    'canmv_mkdir',
-    'canmv_rename',
-    'canmv_delete_file',
-    'canmv_rmdir',
-  ]);
+  private idleDisconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
   private tools: ToolDefinition[] = [
     {
@@ -230,9 +202,7 @@ class CanmvMcpServer {
       description: 'Disconnect the current CanMV board session.',
       inputSchema: objectSchema({}),
       handler: async () => {
-        await this.requestResult(Methods.disconnectBoard, {});
-        this.boardInfo = undefined;
-        this.boardReady = false;
+        await this.disconnectBoardSession();
         return { disconnected: true };
       },
     },
@@ -377,6 +347,18 @@ class CanmvMcpServer {
       handler: async (args) => this.getLatestFrame(args),
     },
     {
+      name: 'canmv_save_latest_frame_to_host',
+      title: 'Save Latest Preview Frame To Host',
+      description: 'Save the latest preview JPEG frame to the MCP host filesystem, optionally waiting for a fresh frame.',
+      inputSchema: objectSchema({
+        localPath: { type: 'string', description: 'Optional host path. Relative paths are resolved under CANMV_MCP_OUTPUT_DIR or the system temp output directory.' },
+        waitMs: { type: 'number', description: 'Milliseconds to wait for a frame if none is available. Defaults to 0, maximum 10000.' },
+        fresh: { type: 'boolean', description: 'Wait for a frame newer than the current one.' },
+        overwrite: { type: 'boolean', description: 'Overwrite localPath if it already exists. Defaults to false for explicit localPath.' },
+      }),
+      handler: async (args) => this.saveLatestFrameToHost(args),
+    },
+    {
       name: 'canmv_virtual_touch_status',
       title: 'Get Virtual Touch Status',
       description: 'Query virtual IDE touch support/state from the connected board.',
@@ -423,6 +405,29 @@ class CanmvMcpServer {
         encoding: { type: 'string', enum: ['utf8', 'base64'], description: 'Output encoding. Defaults to utf8.' },
       }, ['path']),
       handler: async (args) => this.readFile(requiredString(args.path, 'path'), optionalString(args.encoding) || 'utf8'),
+    },
+    {
+      name: 'canmv_download_file_to_host',
+      title: 'Download Remote File To Host',
+      description: 'Read a file from the connected board and write it to the MCP host filesystem.',
+      inputSchema: objectSchema({
+        path: { type: 'string', description: 'Remote file path on the board.' },
+        localPath: { type: 'string', description: 'Optional host path. Relative paths are resolved under CANMV_MCP_OUTPUT_DIR or the system temp output directory.' },
+        overwrite: { type: 'boolean', description: 'Overwrite localPath if it already exists. Defaults to false for explicit localPath.' },
+      }, ['path']),
+      handler: async (args) => this.downloadFileToHost(args),
+    },
+    {
+      name: 'canmv_save_base64_to_host',
+      title: 'Save Base64 Data To Host',
+      description: 'Decode base64 data returned by another MCP tool and write it to the MCP host filesystem.',
+      inputSchema: objectSchema({
+        dataBase64: { type: 'string', description: 'Base64-encoded file bytes.' },
+        localPath: { type: 'string', description: 'Optional host path. Relative paths are resolved under CANMV_MCP_OUTPUT_DIR or the system temp output directory.' },
+        filename: { type: 'string', description: 'Optional default filename when localPath is omitted.' },
+        overwrite: { type: 'boolean', description: 'Overwrite localPath if it already exists. Defaults to false for explicit localPath.' },
+      }, ['dataBase64']),
+      handler: async (args) => this.saveBase64ToHost(args),
     },
     {
       name: 'canmv_write_file',
@@ -607,7 +612,6 @@ class CanmvMcpServer {
     } catch (err) {
       error = err;
     }
-    await this.disconnectAfterTool(name);
     if (error) {
       this.sendResult(id, {
         isError: true,
@@ -643,6 +647,7 @@ class CanmvMcpServer {
     if (info.repl) {
       this.appendTerminal(info.repl);
     }
+    this.scheduleIdleDisconnect();
     return {
       connected: true,
       ready: this.boardReady,
@@ -652,10 +657,7 @@ class CanmvMcpServer {
   }
 
   private async readFile(remotePath: string, encoding: string): Promise<unknown> {
-    const result = await this.requestResult(Methods.ioReadFile, { path: remotePath }) as { data?: number[]; dataBase64?: string };
-    const data = typeof result.dataBase64 === 'string'
-      ? Buffer.from(result.dataBase64, 'base64')
-      : Buffer.from(result.data || []);
+    const data = await this.readRemoteFileBuffer(remotePath);
     if (encoding === 'base64') {
       return { path: remotePath, encoding: 'base64', content: data.toString('base64'), size: data.byteLength };
     }
@@ -663,6 +665,44 @@ class CanmvMcpServer {
       throw new Error(`Unsupported encoding: ${encoding}`);
     }
     return { path: remotePath, encoding: 'utf8', content: data.toString('utf8'), size: data.byteLength };
+  }
+
+  private async readRemoteFileBuffer(remotePath: string): Promise<Buffer> {
+    const result = await this.requestResult(Methods.ioReadFile, { path: remotePath }) as { data?: number[]; dataBase64?: string };
+    return typeof result.dataBase64 === 'string'
+      ? Buffer.from(result.dataBase64, 'base64')
+      : Buffer.from(result.data || []);
+  }
+
+  private async downloadFileToHost(args: Record<string, unknown>): Promise<unknown> {
+    const remotePath = requiredString(args.path, 'path');
+    const data = await this.readRemoteFileBuffer(remotePath);
+    const localPath = writeHostFile(
+      data,
+      optionalString(args.localPath),
+      path.basename(remotePath) || 'canmv-file.bin',
+      args.overwrite === true,
+    );
+    return {
+      remotePath,
+      localPath,
+      size: data.byteLength,
+    };
+  }
+
+  private async saveBase64ToHost(args: Record<string, unknown>): Promise<unknown> {
+    const dataBase64 = requiredString(args.dataBase64, 'dataBase64');
+    const data = Buffer.from(dataBase64, 'base64');
+    const localPath = writeHostFile(
+      data,
+      optionalString(args.localPath),
+      optionalString(args.filename) || 'canmv-output.bin',
+      args.overwrite === true,
+    );
+    return {
+      localPath,
+      size: data.byteLength,
+    };
   }
 
   private async writeFile(remotePath: string, content: string, encoding: string): Promise<unknown> {
@@ -701,16 +741,7 @@ class CanmvMcpServer {
   }
 
   private async getLatestFrame(args: Record<string, unknown>): Promise<unknown> {
-    const waitMs = boundedNumber(args.waitMs, 0, 0, 10000);
-    const baselineFrameId = args.fresh === true ? this.latestFrame?.frameId : undefined;
-    let frame = this.latestFrame;
-    if (!frame && waitMs > 0) {
-      await this.connectBoard();
-      await this.requestResult(Methods.startPreview, {}, { autoConnect: false });
-    }
-    if ((!frame || baselineFrameId !== undefined) && waitMs > 0) {
-      frame = await this.waitForFrame(waitMs, baselineFrameId);
-    }
+    const frame = await this.latestFrameForArgs(args);
     if (!frame) {
       return { available: false };
     }
@@ -723,6 +754,42 @@ class CanmvMcpServer {
       size: frame.data.byteLength,
       dataBase64: Buffer.from(frame.data).toString('base64'),
     };
+  }
+
+  private async saveLatestFrameToHost(args: Record<string, unknown>): Promise<unknown> {
+    const frame = await this.latestFrameForArgs(args);
+    if (!frame) {
+      return { available: false };
+    }
+    const localPath = writeHostFile(
+      Buffer.from(frame.data),
+      optionalString(args.localPath),
+      `canmv-frame-${fileTimestamp(frame.receivedAt)}.jpg`,
+      args.overwrite === true,
+    );
+    return {
+      available: true,
+      localPath,
+      frameId: frame.frameId,
+      receivedAt: frame.receivedAt,
+      ageMs: Date.now() - frame.receivedAt,
+      mimeType: 'image/jpeg',
+      size: frame.data.byteLength,
+    };
+  }
+
+  private async latestFrameForArgs(args: Record<string, unknown>): Promise<FrameInfo | undefined> {
+    const waitMs = boundedNumber(args.waitMs, 0, 0, 10000);
+    const baselineFrameId = args.fresh === true ? this.latestFrame?.frameId : undefined;
+    let frame = this.latestFrame;
+    if (!frame && waitMs > 0) {
+      await this.connectBoard();
+      await this.requestResult(Methods.startPreview, {}, { autoConnect: false });
+    }
+    if ((!frame || baselineFrameId !== undefined) && waitMs > 0) {
+      frame = await this.waitForFrame(waitMs, baselineFrameId);
+    }
+    return frame;
   }
 
   private async virtualTouchTap(args: Record<string, unknown>): Promise<unknown> {
@@ -748,24 +815,42 @@ class CanmvMcpServer {
       await this.connectBoard();
     }
     const result = await this.backend.request(createRequest(method as never, params as never));
+    this.scheduleIdleDisconnect();
     if (isResponse(result)) {
       return result.result;
     }
     throw new Error(result.error.message);
   }
 
-  private async disconnectAfterTool(name: string): Promise<void> {
-    if (!this.autoDisconnectToolNames.has(name)) {
-      return;
-    }
+  private async disconnectBoardSession(): Promise<void> {
+    this.clearIdleDisconnect();
     try {
       await this.backend.close();
     } catch (err) {
-      logStderr(`Auto-disconnect failed after ${name}: ${errorMessage(err)}`);
+      logStderr(`Disconnect failed: ${errorMessage(err)}`);
     } finally {
       this.boardInfo = undefined;
       this.boardReady = false;
       this.latestFrame = undefined;
+    }
+  }
+
+  private scheduleIdleDisconnect(): void {
+    this.clearIdleDisconnect();
+    if (IDLE_DISCONNECT_MS <= 0) {
+      return;
+    }
+    this.idleDisconnectTimer = setTimeout(() => {
+      this.idleDisconnectTimer = undefined;
+      void this.disconnectBoardSession();
+    }, IDLE_DISCONNECT_MS);
+    this.idleDisconnectTimer.unref?.();
+  }
+
+  private clearIdleDisconnect(): void {
+    if (this.idleDisconnectTimer) {
+      clearTimeout(this.idleDisconnectTimer);
+      this.idleDisconnectTimer = undefined;
     }
   }
 
@@ -846,6 +931,7 @@ class CanmvMcpServer {
   }
 
   private async shutdown(code?: number): Promise<void> {
+    this.clearIdleDisconnect();
     await this.backend.close();
     if (typeof code === 'number') {
       process.exit(code);
@@ -1035,6 +1121,48 @@ function executableName(): string {
   return process.platform === 'win32' ? 'canmv-backend.exe' : 'canmv-backend';
 }
 
+function writeHostFile(data: Buffer, localPath: string | undefined, defaultName: string, overwrite: boolean): string {
+  const target = resolveHostOutputPath(localPath, defaultName);
+  if (!overwrite && fs.existsSync(target)) {
+    throw new Error(`Host file already exists: ${target}. Pass overwrite=true or choose a different localPath.`);
+  }
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, data);
+  return target;
+}
+
+function resolveHostOutputPath(localPath: string | undefined, defaultName: string): string {
+  if (localPath) {
+    return path.resolve(path.isAbsolute(localPath) ? localPath : path.join(DEFAULT_HOST_OUTPUT_DIR, localPath));
+  }
+  return uniqueHostPath(path.join(DEFAULT_HOST_OUTPUT_DIR, safeHostFilename(defaultName || 'canmv-output.bin')));
+}
+
+function uniqueHostPath(target: string): string {
+  if (!fs.existsSync(target)) {
+    return target;
+  }
+  const dir = path.dirname(target);
+  const ext = path.extname(target);
+  const base = path.basename(target, ext);
+  for (let index = 1; index < 10000; index++) {
+    const candidate = path.join(dir, `${base}-${index}${ext}`);
+    if (!fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  throw new Error(`Unable to choose a unique host output path for: ${target}`);
+}
+
+function safeHostFilename(name: string): string {
+  const base = path.basename(name).replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '');
+  return base || 'canmv-output.bin';
+}
+
+function fileTimestamp(ms: number): string {
+  return new Date(ms).toISOString().replace(/[:.]/g, '-');
+}
+
 function toolResult(value: unknown): ToolResult {
   if (typeof value === 'string') {
     return { content: [{ type: 'text', text: value }] };
@@ -1058,8 +1186,9 @@ function scriptWorkflowInstructions(): string {
     'Use `canmv_examples_search` / `canmv_examples_read` for working script patterns.',
     'Use `canmv_stubs_search` / `canmv_stubs_read` for accurate APIs, classes, constants, and function signatures.',
     'Only after grounding in examples/stubs should you call script-writing or execution tools such as `canmv_write_and_run_script`, `canmv_run_script`, `canmv_write_file`, `canmv_save_main_py`, or `canmv_save_boot_py`.',
-    'For camera or vision scripts, prefer the `canmv_iterate_with_preview` prompt and use preview-frame tools when a board is connected.',
-    'Board-facing tools are single-shot: the MCP server auto-connects when needed and disconnects the board/backend after each tool call completes.',
+    'For camera or vision scripts, prefer the `canmv_iterate_with_preview` prompt and use preview-frame tools while the MCP board session remains active.',
+    'When the user asks to save an image or downloaded artifact to the host, use `canmv_save_latest_frame_to_host`, `canmv_download_file_to_host`, or `canmv_save_base64_to_host` instead of asking the client to decode base64 text.',
+    `Board-facing tools auto-connect when needed and keep the board session alive for related follow-up calls. The server disconnects on explicit \`canmv_disconnect_board\`, MCP client shutdown, or after ${IDLE_DISCONNECT_MS}ms of MCP board inactivity.`,
   ].join('\n');
 }
 

@@ -103,11 +103,13 @@ The CanMV Terminal panel keeps recent scrollback, mirrors board/script output, a
 
 ### Use MCP Tools
 
-The extension contributes a `CanMV MCP Server` definition to VS Code. Compatible MCP clients can discover tools for capability analysis, board detection/connection, script execution, preview frames, virtual touch, terminal input/output, remote filesystem operations, and read-only access to cached CanMV examples and MicroPython stubs.
+The extension contributes a `CanMV MCP Server` definition to VS Code. Compatible MCP clients can discover tools for capability analysis, board detection/connection, script execution, preview frames, virtual touch, terminal input/output, remote filesystem operations, host-side artifact saving, and read-only access to cached CanMV examples and MicroPython stubs.
 
 The MCP server runs as a standalone stdio Node process and uses the same bundled backend as the extension. It honors `canmv.backendPath`, `canmv.serialPath`, and `canmv.baudRate` through environment passed by the extension. Example and stub tools read the local caches under `~/.kendryte/k230_canmv_examples` and `~/.kendryte/k230_canmv_stubs`, so refresh/connect once if those caches are empty.
 
-Board-facing MCP tools are single-shot. The server auto-connects to the board when a tool needs hardware access, runs the requested operation, and then disconnects the board/backend before returning the tool result. This prevents MCP clients from leaving the serial device claimed after a command finishes.
+Board-facing MCP tools auto-connect when hardware access is needed and keep the board session alive for related follow-up calls, such as running a script, starting preview, and reading a frame. The server disconnects on `canmv_disconnect_board`, when the MCP client exits, or after an idle timeout. Set `CANMV_MCP_IDLE_DISCONNECT_MS` to adjust the timeout; the default is 120000 milliseconds.
+
+When an AI workflow needs to save an image or downloaded artifact on the host, prefer the host-save tools instead of asking the MCP client to decode base64 text. `canmv_save_latest_frame_to_host` saves the current preview JPEG directly, `canmv_download_file_to_host` copies a remote board file to the host, and `canmv_save_base64_to_host` decodes base64 data returned by another tool. Relative output paths are written under `CANMV_MCP_OUTPUT_DIR` when set, or a temporary `canmv-mcp` output directory by default.
 
 MCP capabilities include:
 
@@ -116,10 +118,11 @@ MCP capabilities include:
 | Extension and board analysis | `canmv_analyze_capabilities`, `canmv_resource_summary`, `canmv_resource_route_info`, `canmv_board_info`, `canmv_board_capabilities`, `canmv_firmware_info` | Let an AI client inspect available CanMV features, firmware/resource cache state, local script resources, and the connected board state. |
 | Board connection | `canmv_detect_boards`, `canmv_connect_board`, `canmv_disconnect_board` | Detect and manage a board session from an AI workflow. |
 | Script execution | `canmv_run_script`, `canmv_write_and_run_script`, `canmv_stop_script`, `canmv_script_running` | Generate, write, run, stop, and check MicroPython scripts while collecting terminal output. |
-| Preview and visual feedback | `canmv_start_preview`, `canmv_get_latest_frame`, `canmv_stop_preview` | Start framebuffer streaming and return the latest JPEG frame as base64 for visual iteration. |
+| Preview and visual feedback | `canmv_start_preview`, `canmv_get_latest_frame`, `canmv_save_latest_frame_to_host`, `canmv_stop_preview` | Start framebuffer streaming, return the latest JPEG frame as base64, or save it directly to the MCP host. |
 | Virtual touch | `canmv_virtual_touch_status`, `canmv_virtual_touch_tap` | Query and send virtual touch taps to supported running scripts. |
 | Terminal access | `canmv_terminal_input`, `canmv_terminal_output` | Send REPL input and read buffered board/script output. |
-| Remote filesystem | `canmv_list_dir`, `canmv_stat_file`, `canmv_read_file`, `canmv_write_file`, `canmv_execute_file`, `canmv_save_main_py`, `canmv_save_boot_py`, `canmv_mkdir`, `canmv_rename`, `canmv_delete_file`, `canmv_rmdir` | Inspect, edit, create, execute, install startup files, and remove files on the board. |
+| Remote filesystem | `canmv_list_dir`, `canmv_stat_file`, `canmv_read_file`, `canmv_download_file_to_host`, `canmv_write_file`, `canmv_execute_file`, `canmv_save_main_py`, `canmv_save_boot_py`, `canmv_mkdir`, `canmv_rename`, `canmv_delete_file`, `canmv_rmdir` | Inspect, edit, create, download, execute, install startup files, and remove files on the board. |
+| Host artifact saving | `canmv_save_base64_to_host`, `canmv_save_latest_frame_to_host`, `canmv_download_file_to_host` | Save preview images, remote board files, or base64 tool results to the filesystem where the MCP server is running. |
 | Examples context | `canmv_examples_list`, `canmv_examples_search`, `canmv_examples_read` | Find and read cached official examples so generated scripts follow working CanMV patterns. |
 | API stubs context | `canmv_stubs_list`, `canmv_stubs_search`, `canmv_stubs_read` | Find and read MicroPython `.pyi` definitions so generated scripts use accurate APIs and signatures. |
 | MCP resources | `resources/list`, `resources/read` | Expose cached example and stub files as MCP resources for clients that prefer resource browsing over tool calls. |
