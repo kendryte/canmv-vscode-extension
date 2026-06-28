@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0
+
+- Added CanMV MCP server: standalone stdio server exposing board detection, connection, script execution, terminal I/O, remote filesystem operations, preview frame capture, virtual touch, startup-file helpers, firmware/resource diagnostics, cached examples and stubs context, and host-side file saving tools for compatible VS Code AI clients
+- Added MCP server auto-disconnect on idle timeout and graceful board disconnect on MCP shutdown
+- Added CanmvResourceService for managing default resources, examples, and board-specific resource resolution
+- Added ExamplesService with local caching and auto-download of CanMV examples
+- Added ResourceRouteService for firmware revision resolution and CDN manifest-based resource fetching
+- Refactored StubsService to use ResourceRouteService for board-revision-matched stub downloads
+- Enhanced script execution to support running scripts directly from the active editor
+- Enhanced Examples tree provider with improved caching and download progress
+- Improved backend firmware version parsing with unit tests for version handling
+- Updated README with MCP tools documentation and localized MCP provider labels
+
 ## 0.6.0
 
 - Added video recording functionality with UI controls for capturing and managing recordings from the device
