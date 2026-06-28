@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1
+
+- Add Chinese version README
+
 ## 0.7.0
 
 - Added CanMV MCP server: standalone stdio server exposing board detection, connection, script execution, terminal I/O, remote filesystem operations, preview frame capture, virtual touch, startup-file helpers, firmware/resource diagnostics, cached examples and stubs context, and host-side file saving tools for compatible VS Code AI clients
