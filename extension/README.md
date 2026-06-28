@@ -1,5 +1,7 @@
 # CanMV for Visual Studio Code
 
+> Language: **English** | [中文](https://github.com/kendryte/canmv-vscode-extension/blob/main/extension/README_zh.md)
+
 The CanMV for Visual Studio Code extension brings CanMV K230 board development into Visual Studio Code. It connects to the board through the bundled native backend, runs MicroPython scripts, streams camera frames, manages files on the device, and provides an integrated board terminal.
 
 ![CanMV for Visual Studio Code demo](https://raw.githubusercontent.com/kendryte/canmv-vscode-extension/main/extension/resources/demo.gif)
