@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.2
+
+- Enhanced Pylance configuration with user-managed stub paths and overlay support
+
 ## 0.7.1
 
 - Add Chinese version README
