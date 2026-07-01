@@ -27,6 +27,8 @@
   "No frame buffer image available. Start Preview, wait for a frame, or open an image file.": "没有可用的帧缓冲图像。请启动预览、等待一帧，或打开图像文件。",
   "Preview Canvas": "预览画布",
   "CanMV: Script stopped.": "CanMV: 脚本已停止。",
+  "Show Terminal": "显示终端",
+  "CanMV: Script exception detected - {message}": "CanMV: 检测到脚本异常 - {message}",
   "CanMV: Failed to stop script - {message}": "CanMV: 停止脚本失败 - {message}",
   "Stop Script": "停止脚本",
   "CanMV: A script is already running. Stop it before running another script.": "CanMV: 已有脚本正在运行。请先停止它再运行其他脚本。",

@@ -57,6 +57,34 @@ const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.L
 statusItem.text = '$(debug-disconnect) CanMV';
 statusItem.tooltip = states.disconnected();
 
+const scriptExceptionBufferLimit = 4096;
+const tracebackHeader = 'Traceback (most recent call last):';
+const pythonExceptionLinePattern = /^(?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*(?::.*)?$/;
+const ignoredStopExceptionLinePattern = /^(?:KeyboardInterrupt|SystemExit)(?::.*)?$/;
+const ideInterruptExceptionLine = 'Exception: IDE interrupt';
+
+function scriptExceptionSummary(output: string, stopInFlight = false): string | undefined {
+  const tracebackIndex = output.lastIndexOf(tracebackHeader);
+  if (tracebackIndex < 0) return undefined;
+
+  const lines = output.slice(tracebackIndex + tracebackHeader.length).split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const rawLine = lines[i];
+    const line = rawLine.trim();
+    if (!line || /^\s/.test(rawLine) || line.startsWith('File ') || line.startsWith('Traceback ') || /^\^+$/.test(line)) {
+      continue;
+    }
+    if (ignoredStopExceptionLinePattern.test(line) || (stopInFlight && line === ideInterruptExceptionLine)) {
+      return undefined;
+    }
+    if (pythonExceptionLinePattern.test(line)) {
+      return line;
+    }
+  }
+
+  return undefined;
+}
+
 export function activate(context: vscode.ExtensionContext) {
   logActivationInfo(context);
   registerMcpSupport(context);
@@ -101,6 +129,9 @@ export function activate(context: vscode.ExtensionContext) {
   let connectionBusy = false;
   let connectionPhase: 'idle' | 'connecting' | 'disconnecting' = 'idle';
   let scriptBusy = false;
+  let scriptStopInFlight = false;
+  let scriptExceptionBuffer = '';
+  let scriptExceptionNotified = false;
   let lastOperationEndTime = 0;
   let remoteFilesPausedUntil = 0;
   let remoteFilesPauseTimer: ReturnType<typeof setTimeout> | undefined;
@@ -184,6 +215,26 @@ export function activate(context: vscode.ExtensionContext) {
     connectionPhase = value;
     controlProvider?.setState({ connectionPhase: value });
   };
+  const resetScriptExceptionDetector = () => {
+    scriptExceptionBuffer = '';
+    scriptExceptionNotified = false;
+  };
+  const inspectScriptOutputForException = (text: string) => {
+    if (!scriptRunning || scriptExceptionNotified) return;
+    scriptExceptionBuffer = (scriptExceptionBuffer + text).slice(-scriptExceptionBufferLimit);
+    const summary = scriptExceptionSummary(scriptExceptionBuffer, scriptStopInFlight);
+    if (!summary) return;
+
+    scriptExceptionNotified = true;
+    logWarn('Script', `Runtime exception detected: ${summary}`);
+    const showTerminal = t('Show Terminal');
+    void vscode.window.showWarningMessage(t('CanMV: Script exception detected - {message}', { message: summary }), showTerminal)
+      .then((selection) => {
+        if (selection === showTerminal) {
+          void vscode.commands.executeCommand('canmv.terminalView.focus');
+        }
+      });
+  };
   const setScriptBusyContext = (value: boolean) => {
     scriptBusy = value;
     void vscode.commands.executeCommand('setContext', 'canmv.scriptBusy', value);
@@ -232,8 +283,12 @@ export function activate(context: vscode.ExtensionContext) {
   const setScriptRunningContext = (value: boolean) => {
     const wasRunning = scriptRunning;
     scriptRunning = value;
+    if (!wasRunning && value) {
+      resetScriptExceptionDetector();
+    }
     if (wasRunning && !value) {
       pauseRemoteFiles(1500);
+      resetScriptExceptionDetector();
     }
     void vscode.commands.executeCommand('setContext', 'canmv.scriptRunning', value);
     previewPanel?.sendScriptRunning(value);
@@ -385,6 +440,7 @@ export function activate(context: vscode.ExtensionContext) {
     terminalScrollback.push(text);
     terminalScrollbackSize += text.length;
     trimTerminalScrollback();
+    inspectScriptOutputForException(text);
     terminalViewProvider?.appendText(text);
   };
 
@@ -892,6 +948,7 @@ export function activate(context: vscode.ExtensionContext) {
   const stopRunningScript = async (options: { stopPreview: boolean; allowWhileConnectionBusy?: boolean }) => {
     if (!connected && !scriptRunning) return;
     if (!beginScriptOperation({ allowWhileConnectionBusy: options.allowWhileConnectionBusy, skipCooldown: options.allowWhileConnectionBusy })) return;
+    scriptStopInFlight = true;
     try {
       cancelPreviewAutoStart();
       if (options.stopPreview) {
@@ -919,6 +976,7 @@ export function activate(context: vscode.ExtensionContext) {
       refreshExplorerSoon(300);
       refreshExplorerSoon(1200);
     } finally {
+      scriptStopInFlight = false;
       endScriptOperation();
     }
   };
