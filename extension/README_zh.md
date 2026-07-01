@@ -232,7 +232,7 @@ Stubs 缓存位置：
 
 在激活时，扩展会解析最新的固件资源，在可用时复用本地缓存，并在 `canmv.stubsAutoDownload` 启用时下载缺失的 stubs/示例。开发板连接后，当开发板报告完整的固件 commit hash 时，扩展会切换到精确的固件路由。
 
-扩展使用指向当前 stubs 目录的 `python.analysis.extraPaths` 配置 Pylance。扩展管理的旧版 `python.analysis.stubPath` 值仅在兼容性需要时更新。
+扩展会配置由自身管理的 `python.analysis.stubPath` overlay，让 CanMV MicroPython stubs 优先于同名的主机 Python 模块。已有的用户 stub 根目录会尽量合并到该 overlay 中，同时仍会为当前 stubs 缓存和镜像的开发板文件更新 `python.analysis.extraPaths`。
 
 ## 后端
 
@@ -292,7 +292,7 @@ npm run package:vsix
 - 预览停止更新：禁用并重新启用预览，或停止并重新启动脚本。
 - 远程文件编辑未同步：保存镜像后的本地文件，并检查 `CanMV` 输出通道中的传输错误。
 - 示例缺失：运行 `CanMV: Refresh Examples`，在启用自动下载的情况下连接一次，并检查 `CanMV` 输出通道中的资源下载错误。
-- Python 补全缺失：确认 Pylance 已安装，配置 stubs 后重新加载 Visual Studio Code，并检查 `python.analysis.extraPaths`。
+- Python 补全缺失：确认 Pylance 已安装，配置 stubs 后重新加载 Visual Studio Code，并检查 `python.analysis.stubPath` 和 `python.analysis.extraPaths`。
 - 文件操作失败：刷新设备树并查看 `CanMV` 输出通道。
 
 ## 仓库

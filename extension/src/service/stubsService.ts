@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { logError, logInfo, logWarn } from '../output';
 import { resolveNativeBackendCommand } from '../backend/native';
@@ -16,7 +17,9 @@ import { CanmvResourceRoute, CanmvResourceRouteService, normalizeFirmwareRevisio
  */
 export class StubsService {
   private static readonly lastRevisionKey = 'canmv.stubs.lastRevision';
+  private static readonly userStubPathKey = 'canmv.stubs.userStubPath';
   private readonly baseDir: string;
+  private readonly pylanceOverlayBaseDir: string;
   private boardRevisionRequested = '';
 
   constructor(
@@ -24,6 +27,7 @@ export class StubsService {
     private readonly routeService: CanmvResourceRouteService = new CanmvResourceRouteService(),
   ) {
     this.baseDir = path.join(os.homedir(), '.kendryte', 'k230_canmv_stubs');
+    this.pylanceOverlayBaseDir = path.join(os.homedir(), '.kendryte', 'k230_canmv_pylance');
   }
 
   async ensureDefaultStubs(): Promise<string | null> {
@@ -229,39 +233,53 @@ export class StubsService {
   }
 
   private async configurePylance(stubsDir: string): Promise<void> {
-    const config = vscode.workspace.getConfiguration('python.analysis');
+    const workspace = this.firstFileWorkspaceFolder();
+    const config = vscode.workspace.getConfiguration('python.analysis', workspace?.uri);
     const currentExtraPaths = config.get<string[]>('extraPaths') || [];
     const currentStubPath = config.get<string>('stubPath') || '';
+    const currentDiagnosticOverrides = config.get<Record<string, string>>('diagnosticSeverityOverrides') || {};
+    const userStubPath = await this.resolveUserStubPath(currentStubPath);
+    const overlayStubPath = this.buildPylanceStubOverlay(stubsDir, userStubPath);
     const nextExtraPaths = this.replaceCanMVStubsPath(currentExtraPaths, stubsDir);
+    const nextDiagnosticOverrides = {
+      ...currentDiagnosticOverrides,
+      reportMissingModuleSource: 'none',
+    };
     const extraPathsChanged = !this.stringArraysEqual(currentExtraPaths, nextExtraPaths);
-    const shouldUpdateLegacyStubPath =
-      this.isCanMVStubsPath(currentStubPath) && !this.pathsEqual(currentStubPath, stubsDir);
+    const stubPathChanged = !this.pathsEqual(currentStubPath, overlayStubPath);
+    const diagnosticsChanged = currentDiagnosticOverrides.reportMissingModuleSource !== 'none';
 
-    if (!extraPathsChanged && !shouldUpdateLegacyStubPath) {
-      logInfo('Stubs', `Pylance extraPaths already configured: ${stubsDir}`);
+    if (!extraPathsChanged && !stubPathChanged && !diagnosticsChanged) {
+      logInfo('Stubs', `Pylance stubs already configured: ${overlayStubPath}`);
       return;
     }
 
-    for (const target of [vscode.ConfigurationTarget.Workspace, vscode.ConfigurationTarget.Global]) {
+    const targets = workspace
+      ? [vscode.ConfigurationTarget.Workspace]
+      : [vscode.ConfigurationTarget.Global];
+    for (const target of targets) {
       try {
         if (extraPathsChanged) {
           await config.update('extraPaths', nextExtraPaths, target);
         }
-        if (shouldUpdateLegacyStubPath) {
-          await config.update('stubPath', stubsDir, target);
+        if (stubPathChanged) {
+          await config.update('stubPath', overlayStubPath, target);
+        }
+        if (diagnosticsChanged) {
+          await config.update('diagnosticSeverityOverrides', nextDiagnosticOverrides, target);
         }
         const scope = target === vscode.ConfigurationTarget.Workspace ? 'workspace' : 'global';
-        logInfo('Stubs', `Pylance python.analysis.extraPaths configured (${scope}): ${stubsDir}`);
+        logInfo('Stubs', `Pylance python.analysis.stubPath configured (${scope}): ${overlayStubPath}`);
         vscode.window.showInformationMessage(
           t('CanMV: Pylance stubs configured. Reload window for full effect.')
         );
         return;
-      } catch {
-        // Workspace may not be open; try global.
+      } catch (err) {
+        logWarn('Stubs', `Could not update Pylance settings (${target}): ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
-    logError('Stubs', `Failed to configure Pylance stubs path: ${stubsDir}`);
+    logError('Stubs', `Failed to configure Pylance stubs path: ${overlayStubPath}`);
   }
 
   private replaceCanMVStubsPath(extraPaths: string[], stubsDir: string): string[] {
@@ -286,10 +304,143 @@ export class StubsService {
     return next;
   }
 
+  private async resolveUserStubPath(currentStubPath: string): Promise<string> {
+    const savedStubPath = this.context?.workspaceState.get<string>(StubsService.userStubPathKey) || '';
+
+    if (!currentStubPath || this.isCanMVManagedStubPath(currentStubPath)) {
+      return this.usableStubRoot(savedStubPath);
+    }
+
+    const resolved = this.usableStubRoot(currentStubPath);
+    if (!resolved || this.isCanMVStubsPath(resolved) || this.isCanMVOverlayPath(resolved)) {
+      await this.context?.workspaceState.update(StubsService.userStubPathKey, undefined);
+      return '';
+    }
+
+    await this.context?.workspaceState.update(StubsService.userStubPathKey, currentStubPath);
+    return resolved;
+  }
+
+  private buildPylanceStubOverlay(stubsDir: string, userStubPath: string): string {
+    const overlayDir = this.pylanceOverlayDir();
+    this.resetPylanceStubOverlay(overlayDir);
+    this.linkOrCopyStubRoot(stubsDir, overlayDir, true);
+    if (userStubPath) {
+      this.linkOrCopyStubRoot(userStubPath, overlayDir, false);
+    }
+    return overlayDir;
+  }
+
+  private resetPylanceStubOverlay(overlayDir: string): void {
+    if (!this.isCanMVOverlayPath(overlayDir)) {
+      throw new Error(`Refusing to reset non-CanMV Pylance overlay path: ${overlayDir}`);
+    }
+    fs.rmSync(overlayDir, { recursive: true, force: true });
+    fs.mkdirSync(overlayDir, { recursive: true });
+  }
+
+  private linkOrCopyStubRoot(sourceDir: string, overlayDir: string, overwrite: boolean): void {
+    const normalizedSource = this.normalizeFsPathForCompare(sourceDir);
+    const normalizedOverlay = this.normalizeFsPathForCompare(overlayDir);
+    if (!normalizedSource || normalizedSource === normalizedOverlay) return;
+
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(sourceDir, { withFileTypes: true });
+    } catch (err) {
+      logWarn('Stubs', `Could not read stub root for Pylance overlay: ${sourceDir}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    for (const entry of entries) {
+      const source = path.join(sourceDir, entry.name);
+      const target = path.join(overlayDir, entry.name);
+      if (fs.existsSync(target)) {
+        if (!overwrite) continue;
+        fs.rmSync(target, { recursive: true, force: true });
+      }
+      this.linkOrCopyStubEntry(source, target, entry);
+    }
+  }
+
+  private linkOrCopyStubEntry(source: string, target: string, entry: fs.Dirent): void {
+    try {
+      if (entry.isSymbolicLink()) {
+        const realSource = fs.realpathSync(source);
+        const realEntry = fs.statSync(realSource);
+        const type = realEntry.isDirectory() ? this.directorySymlinkType() : 'file';
+        fs.symlinkSync(realSource, target, type);
+        return;
+      }
+
+      const type = entry.isDirectory() ? this.directorySymlinkType() : 'file';
+      fs.symlinkSync(source, target, type);
+    } catch {
+      try {
+        fs.cpSync(source, target, { recursive: true, dereference: true });
+      } catch (err) {
+        logWarn('Stubs', `Could not add stub entry to Pylance overlay: ${source}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  private directorySymlinkType(): fs.symlink.Type {
+    return process.platform === 'win32' ? 'junction' : 'dir';
+  }
+
+  private pylanceOverlayDir(): string {
+    const workspace = this.firstFileWorkspaceFolder();
+    const scope = workspace?.uri.toString() || this.context?.globalStorageUri.toString() || os.homedir();
+    const scopeHash = crypto.createHash('sha256').update(scope).digest('hex').slice(0, 16);
+    return path.join(this.pylanceOverlayBaseDir, scopeHash, 'typings');
+  }
+
+  private firstFileWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
+    return vscode.workspace.workspaceFolders?.find(folder => folder.uri.scheme === 'file');
+  }
+
+  private usableStubRoot(value: string): string {
+    if (!value) return '';
+
+    const resolved = this.resolveConfiguredPath(value);
+    if (!resolved) return '';
+
+    try {
+      return fs.statSync(resolved).isDirectory() ? resolved : '';
+    } catch {
+      return '';
+    }
+  }
+
+  private resolveConfiguredPath(value: string): string {
+    const expanded = this.expandHome(value.trim());
+    if (!expanded) return '';
+    if (path.isAbsolute(expanded)) {
+      return path.resolve(path.normalize(expanded));
+    }
+
+    const workspace = this.firstFileWorkspaceFolder();
+    if (!workspace) return '';
+    return path.resolve(workspace.uri.fsPath, path.normalize(expanded));
+  }
+
+  private isCanMVManagedStubPath(value: string): boolean {
+    return this.isCanMVStubsPath(value) || this.isCanMVOverlayPath(value);
+  }
+
   private isCanMVStubsPath(value: string): boolean {
     if (!value) return false;
 
     const baseDir = this.normalizeFsPathForCompare(this.baseDir);
+    const candidate = this.normalizeFsPathForCompare(value);
+    const relative = path.relative(baseDir, candidate);
+    return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+  }
+
+  private isCanMVOverlayPath(value: string): boolean {
+    if (!value) return false;
+
+    const baseDir = this.normalizeFsPathForCompare(this.pylanceOverlayBaseDir);
     const candidate = this.normalizeFsPathForCompare(value);
     const relative = path.relative(baseDir, candidate);
     return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
@@ -300,14 +451,18 @@ export class StubsService {
   }
 
   private normalizeFsPathForCompare(value: string): string {
+    const expanded = this.expandHome(value);
+    const normalized = path.resolve(path.normalize(expanded));
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+  }
+
+  private expandHome(value: string): string {
     const trimmed = value.trim();
-    const expanded = trimmed === '~'
+    return trimmed === '~'
       ? os.homedir()
       : trimmed.startsWith('~/') || trimmed.startsWith('~\\')
         ? path.join(os.homedir(), trimmed.slice(2))
         : trimmed;
-    const normalized = path.resolve(path.normalize(expanded));
-    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
   }
 
   private stringArraysEqual(left: string[], right: string[]): boolean {

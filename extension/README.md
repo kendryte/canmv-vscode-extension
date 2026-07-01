@@ -232,7 +232,7 @@ Examples are cached under:
 
 On activation, the extension resolves the latest firmware resources, reuses local caches when available, and downloads missing stubs/examples when `canmv.stubsAutoDownload` is enabled. After a board connects, it switches to the exact firmware route when the board reports a full firmware commit hash.
 
-The extension configures Pylance with `python.analysis.extraPaths` pointing at the active stubs directory. Older `python.analysis.stubPath` values managed by the extension are updated only when needed for compatibility.
+The extension configures Pylance with an extension-managed `python.analysis.stubPath` overlay so CanMV MicroPython stubs take precedence over host Python modules with the same names. Existing user stub roots are folded into that overlay when possible, and `python.analysis.extraPaths` is still updated for the active stubs cache and mirrored board files.
 
 ## Backend
 
@@ -292,7 +292,7 @@ npm run package:vsix
 - Preview stops updating: disable and re-enable Preview, or stop and restart the script.
 - Remote file edits are not syncing: save the mirrored local file and check the `CanMV` Output channel for transfer errors.
 - Examples are missing: run `CanMV: Refresh Examples`, connect once with auto-download enabled, and check the `CanMV` Output channel for resource download errors.
-- Python completions are missing: confirm Pylance is installed, reload Visual Studio Code after stubs are configured, and check `python.analysis.extraPaths`.
+- Python completions are missing: confirm Pylance is installed, reload Visual Studio Code after stubs are configured, and check `python.analysis.stubPath` plus `python.analysis.extraPaths`.
 - File operations fail: refresh the Device tree and inspect the `CanMV` Output channel.
 
 ## Repository
