@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.3
+
+- Added script exception handling with error type detection and user-friendly notifications
+- Added automatic terminal reveal on script output for improved debugging experience
+
 ## 0.7.2
 
 - Enhanced Pylance configuration with user-managed stub paths and overlay support
