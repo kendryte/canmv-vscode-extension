@@ -1,17 +1,12 @@
 # Changelog
 
-## 0.7.3
+## 0.8.0
 
-- Added script exception handling with error type detection and user-friendly notifications
-- Added automatic terminal reveal on script output for improved debugging experience
-
-## 0.7.2
-
-- Enhanced Pylance configuration with user-managed stub paths and overlay support
-
-## 0.7.1
-
-- Add Chinese version README
+- Added Chinese README for CanMV extension users
+- Enhanced framebuffer preview and examples management documentation
+- Enhanced Pylance configuration with extension-managed stub overlays while preserving user-managed paths
+- Added script exception detection with user-friendly notifications and terminal reveal support
+- Improved terminal input and script output processing for smoother repeated script start/stop workflows
 
 ## 0.7.0
 
