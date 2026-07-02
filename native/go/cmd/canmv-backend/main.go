@@ -37,9 +37,10 @@ type server struct {
 }
 
 const (
-	previewNoFrameRetryDelay = 2 * time.Millisecond
-	previewNoFrameRetryLimit = 8
-	previewWindowsTimerGuard = 6 * time.Millisecond
+	previewNoFrameRetryDelay   = 2 * time.Millisecond
+	previewNoFrameRetryLimit   = 8
+	previewWindowsTimerGuard   = 6 * time.Millisecond
+	scriptOutputEventChunkSize = 32 * 1024
 )
 
 func main() {
@@ -309,9 +310,7 @@ func (s *server) runScript(params map[string]interface{}) (interface{}, int, str
 		return map[string]string{"status": "error", "message": "Board communication error; try again shortly", "output": err.Error()}, 0, ""
 	}
 	_ = s.softResetBoard(board)
-	if data := s.drainBoardFor(board, 800*time.Millisecond, 25*time.Millisecond, 120*time.Millisecond); len(data) > 0 {
-		_ = s.conn.Event("scriptOutput", map[string]string{"text": string(data)})
-	}
+	s.emitScriptOutput(s.drainBoardFor(board, 800*time.Millisecond, 25*time.Millisecond, 120*time.Millisecond))
 	if !s.isCurrentBoard(board) {
 		return map[string]string{"status": "error", "message": "Board disconnected", "output": "Board disconnected"}, 0, ""
 	}
@@ -465,9 +464,7 @@ func (s *server) fileExec(params map[string]interface{}) (interface{}, int, stri
 		return map[string]string{"status": "error", "message": "Board communication error; try again shortly", "output": err.Error()}, 0, ""
 	}
 	_ = s.softResetBoard(board)
-	if data := s.drainBoardFor(board, 800*time.Millisecond, 25*time.Millisecond, 120*time.Millisecond); len(data) > 0 {
-		_ = s.conn.Event("scriptOutput", map[string]string{"text": string(data)})
-	}
+	s.emitScriptOutput(s.drainBoardFor(board, 800*time.Millisecond, 25*time.Millisecond, 120*time.Millisecond))
 	if !s.isCurrentBoard(board) {
 		return map[string]string{"status": "error", "message": "Board disconnected"}, 0, ""
 	}
@@ -766,9 +763,7 @@ func (s *server) startPreviewLoop(fps int, operationSeq uint64) {
 						continue
 					}
 					linkErrors = 0
-					if len(data) > 0 {
-						_ = s.conn.Event("scriptOutput", map[string]string{"text": string(data)})
-					}
+					s.emitScriptOutput(data)
 				}
 			}
 			if validFrameCount%10 == 0 {
@@ -943,9 +938,7 @@ func (s *server) startPoller(assumeRunning bool) {
 					continue
 				}
 				linkErrors = 0
-				if len(data) > 0 {
-					_ = s.conn.Event("scriptOutput", map[string]string{"text": string(data)})
-				}
+				s.emitScriptOutput(data)
 			}
 
 			shouldCheckRunning := wasRunning || assumeRunning || idleStatePoll <= 0
@@ -1029,7 +1022,7 @@ func (s *server) stableDrain(stop <-chan struct{}, board *usbdbg.Board, operatio
 		if len(data) == 0 {
 			return
 		}
-		_ = s.conn.Event("scriptOutput", map[string]string{"text": string(data)})
+		s.emitScriptOutput(data)
 		time.Sleep(50 * time.Millisecond)
 	}
 }
@@ -1054,13 +1047,11 @@ func (s *server) cleanupBoard() {
 		s.board = nil
 	}
 	s.boardMu.Unlock()
-	if data := s.stopScriptAndDrain(board, 1500*time.Millisecond, false); len(data) > 0 {
-		_ = s.conn.Event("scriptOutput", map[string]string{"text": string(data)})
-	}
+	s.emitScriptOutput(s.stopScriptAndDrain(board, 1500*time.Millisecond, false))
 	for attempt := 0; attempt < 2; attempt++ {
 		_ = s.softResetBoard(board)
 		if data := s.drainBoardFor(board, 800*time.Millisecond, 25*time.Millisecond, 120*time.Millisecond); len(data) > 0 {
-			_ = s.conn.Event("scriptOutput", map[string]string{"text": string(data)})
+			s.emitScriptOutput(data)
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -1086,9 +1077,7 @@ func (s *server) scheduleConnectSoftReset(board *usbdbg.Board, operationSeq uint
 			return
 		}
 		_ = s.softResetBoard(board)
-		if data := s.drainBoardFor(board, 1500*time.Millisecond, 50*time.Millisecond, 250*time.Millisecond); len(data) > 0 {
-			_ = s.conn.Event("scriptOutput", map[string]string{"text": string(data)})
-		}
+		s.emitScriptOutput(s.drainBoardFor(board, 1500*time.Millisecond, 50*time.Millisecond, 250*time.Millisecond))
 		if !s.isConnectSetupCurrent(board, operationSeq) {
 			return
 		}
@@ -1099,7 +1088,7 @@ func (s *server) scheduleConnectSoftReset(board *usbdbg.Board, operationSeq uint
 			}
 			_ = s.softResetBoard(board)
 			if data := s.drainBoardFor(board, 600*time.Millisecond, 50*time.Millisecond, 150*time.Millisecond); len(data) > 0 {
-				_ = s.conn.Event("scriptOutput", map[string]string{"text": string(data)})
+				s.emitScriptOutput(data)
 				break
 			}
 			if !s.isConnectSetupCurrent(board, operationSeq) {
@@ -1318,7 +1307,7 @@ func (s *server) stopScriptAndDrain(board *usbdbg.Board, timeout time.Duration, 
 	for time.Now().Before(deadline) {
 		if data := s.drainBoardFor(board, 150*time.Millisecond, 25*time.Millisecond, 50*time.Millisecond); len(data) > 0 {
 			if emitDuringWait {
-				_ = s.conn.Event("scriptOutput", map[string]string{"text": string(data)})
+				s.emitScriptOutput(data)
 			} else {
 				out = append(out, data...)
 			}
@@ -1330,6 +1319,35 @@ func (s *server) stopScriptAndDrain(board *usbdbg.Board, timeout time.Duration, 
 		time.Sleep(50 * time.Millisecond)
 	}
 	return out
+}
+
+func (s *server) emitScriptOutput(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	text := string(data)
+	for len(text) > 0 {
+		end := len(text)
+		if end > scriptOutputEventChunkSize {
+			end = scriptOutputChunkEnd(text, scriptOutputEventChunkSize)
+		}
+		_ = s.conn.Event("scriptOutput", map[string]string{"text": text[:end]})
+		text = text[end:]
+	}
+}
+
+func scriptOutputChunkEnd(text string, maxBytes int) int {
+	end := 0
+	for i := range text {
+		if i > maxBytes {
+			break
+		}
+		end = i
+	}
+	if end <= 0 {
+		return maxBytes
+	}
+	return end
 }
 
 func (s *server) drainBoardFor(board *usbdbg.Board, duration time.Duration, interval time.Duration, idleGrace time.Duration) []byte {

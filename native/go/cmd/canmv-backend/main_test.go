@@ -49,3 +49,13 @@ func TestFirmwareCommitFromFullRequiresFullHash(t *testing.T) {
 		t.Fatalf("firmwareCommitFromFull short hash = %q, want empty", got)
 	}
 }
+
+func TestScriptOutputChunkEndPreservesUTF8Boundary(t *testing.T) {
+	text := "abc你好def"
+	if got := scriptOutputChunkEnd(text, len("abc你")+1); got != len("abc你") {
+		t.Fatalf("scriptOutputChunkEnd split multibyte rune at %d, want %d", got, len("abc你"))
+	}
+	if got := scriptOutputChunkEnd(text, len("abc你")); got != len("abc你") {
+		t.Fatalf("scriptOutputChunkEnd exact boundary = %d, want %d", got, len("abc你"))
+	}
+}

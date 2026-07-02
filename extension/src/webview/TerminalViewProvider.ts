@@ -125,6 +125,9 @@ export class TerminalViewProvider implements vscode.WebviewViewProvider {
   }
 
   setInputEnabled(enabled: boolean, reason = '', interruptEnabled = false): void {
+    if (this.inputEnabled === enabled && this.inputReason === reason && this.interruptEnabled === interruptEnabled) {
+      return;
+    }
     this.inputEnabled = enabled;
     this.inputReason = reason;
     this.interruptEnabled = interruptEnabled;
