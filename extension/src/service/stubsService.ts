@@ -9,6 +9,30 @@ import { resolveNativeBackendCommand } from '../backend/native';
 import { t } from '../i18n';
 import { CanmvResourceRoute, CanmvResourceRouteService, normalizeFirmwareRevision } from './resourceRouteService';
 
+type PylanceStubOverlay = {
+  stubPath: string;
+  refreshed: boolean;
+};
+
+type PylanceStubOverlayManifest = {
+  version: 2;
+  stubsDir: string;
+  userStubPath: string;
+  cacheSignature: string;
+  userStubSignature: string;
+};
+
+type StubCacheValidation = {
+  ok: boolean;
+  pyiFiles: number;
+};
+
+type StubCacheStats = {
+  files: number;
+  pyiFiles: number;
+  maxMtimeMs: number;
+};
+
 /**
  * Downloads K230 MicroPython stubs and configures Pylance to use them.
  *
@@ -18,9 +42,14 @@ import { CanmvResourceRoute, CanmvResourceRouteService, normalizeFirmwareRevisio
 export class StubsService {
   private static readonly lastRevisionKey = 'canmv.stubs.lastRevision';
   private static readonly userStubPathKey = 'canmv.stubs.userStubPath';
+  private static readonly reloadPromptSignatureKey = 'canmv.stubs.reloadPromptSignature';
+  private static readonly overlayManifestFile = '.canmv-pylance-overlay.json';
+  private static readonly pylanceExtensionId = 'ms-python.vscode-pylance';
   private readonly baseDir: string;
   private readonly pylanceOverlayBaseDir: string;
   private boardRevisionRequested = '';
+  private pylanceWarningShown = false;
+  private reloadPromptSignature = '';
 
   constructor(
     private readonly context: vscode.ExtensionContext | undefined,
@@ -153,11 +182,62 @@ export class StubsService {
     const normalized = normalizeFirmwareRevision(revision);
     if (!normalized) return false;
     const cacheDir = this.cacheDirFor(normalized);
+    return this.validateStubCache(cacheDir).ok;
+  }
+
+  private validateStubCache(cacheDir: string): StubCacheValidation {
     try {
-      return fs.existsSync(cacheDir) && fs.readdirSync(cacheDir).some(f => f.endsWith('.pyi'));
+      if (!fs.statSync(cacheDir).isDirectory()) {
+        return { ok: false, pyiFiles: 0 };
+      }
+
+      const stats = this.collectStubCacheStats(cacheDir);
+      return {
+        ok: stats.pyiFiles > 0,
+        pyiFiles: stats.pyiFiles,
+      };
     } catch {
-      return false;
+      return { ok: false, pyiFiles: 0 };
     }
+  }
+
+  private collectStubCacheStats(dir: string): StubCacheStats {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    let files = 0;
+    let pyiFiles = 0;
+    let maxMtimeMs = 0;
+
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+      try {
+        maxMtimeMs = Math.max(maxMtimeMs, fs.statSync(entryPath).mtimeMs);
+      } catch {
+        // ignore entries that disappear while validating
+      }
+      if (entry.isDirectory()) {
+        const child = this.collectStubCacheStats(entryPath);
+        files += child.files;
+        pyiFiles += child.pyiFiles;
+        maxMtimeMs = Math.max(maxMtimeMs, child.maxMtimeMs);
+        continue;
+      }
+
+      if (entry.isFile() || entry.isSymbolicLink()) {
+        files += 1;
+        if (entry.name.endsWith('.pyi')) {
+          pyiFiles += 1;
+        }
+      }
+    }
+
+    return { files, pyiFiles, maxMtimeMs };
+  }
+
+  private stubCacheValidationMessage(validation: StubCacheValidation): string {
+    if (validation.pyiFiles === 0) {
+      return 'no .pyi files found';
+    }
+    return 'unknown validation failure';
   }
 
   private findLatestLocalRevision(): string {
@@ -186,14 +266,33 @@ export class StubsService {
     }
 
     const cacheDir = this.cacheDirFor(normalized);
-    await this.configurePylance(cacheDir);
+    if (!await this.configurePylance(cacheDir)) {
+      return null;
+    }
     await this.context?.globalState.update(StubsService.lastRevisionKey, normalized);
     logInfo('Stubs', `Active ${source} stubs: ${normalized} (${cacheDir})`);
     return cacheDir;
   }
 
   private async downloadAndExtract(route: CanmvResourceRoute): Promise<boolean> {
+    const ok = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: t('CanMV: Downloading code completion stubs ({revision})...', { revision: route.revision }),
+      },
+      () => this.performDownloadAndExtract(route)
+    );
+    if (!ok) {
+      void vscode.window.showWarningMessage(
+        t('CanMV: Failed to download code completion stubs ({revision}). See the CanMV output for details.', { revision: route.revision })
+      );
+    }
+    return ok;
+  }
+
+  private async performDownloadAndExtract(route: CanmvResourceRoute): Promise<boolean> {
     const cacheDir = this.cacheDirFor(route.revision);
+    let tempDir = '';
     logInfo('Stubs', `Downloading stubs archive: ${route.stubsUrl}`);
 
     try {
@@ -203,43 +302,48 @@ export class StubsService {
         return false;
       }
 
-      fs.mkdirSync(cacheDir, { recursive: true });
-      const zipPath = path.join(cacheDir, 'stubs.zip');
+      tempDir = this.createCacheTempDir(route.revision);
+      const zipPath = path.join(tempDir, 'stubs.zip');
       fs.writeFileSync(zipPath, data);
 
-      await this.extractArchive(zipPath, cacheDir);
+      await this.extractArchive(zipPath, tempDir);
       fs.unlinkSync(zipPath);
 
-      const hasPyis = fs.readdirSync(cacheDir).some(f => f.endsWith('.pyi'));
-      if (hasPyis) {
-        logInfo('Stubs', `Extracted stubs archive: ${data.length} bytes -> ${cacheDir}`);
+      this.flattenIfNeeded(tempDir);
+      const validation = this.validateStubCache(tempDir);
+      if (validation.ok) {
+        this.replaceCacheDir(tempDir, cacheDir);
+        logInfo('Stubs', `Extracted stubs archive: ${data.length} bytes, ${validation.pyiFiles} .pyi files -> ${cacheDir}`);
         return true;
       }
 
-      const moved = this.flattenIfNeeded(cacheDir);
-      if (moved) {
-        logInfo('Stubs', `Flattened nested stubs directory: ${cacheDir}`);
-        return true;
-      }
-
-      this.cleanupEmpty(cacheDir);
-      logWarn('Stubs', `Extracted archive did not contain .pyi files: ${route.revision}`);
+      this.cleanupCacheTempDir(tempDir);
+      logWarn('Stubs', `Extracted archive is incomplete for ${route.revision}: ${this.stubCacheValidationMessage(validation)}`);
       return false;
     } catch (err) {
       logError('Stubs', `Download/extract failed for ${route.revision}: ${err}`);
-      this.cleanupEmpty(cacheDir);
+      this.cleanupCacheTempDir(tempDir);
       return false;
     }
   }
 
-  private async configurePylance(stubsDir: string): Promise<void> {
+  private async configurePylance(stubsDir: string): Promise<boolean> {
     const workspace = this.firstFileWorkspaceFolder();
     const config = vscode.workspace.getConfiguration('python.analysis', workspace?.uri);
     const currentExtraPaths = config.get<string[]>('extraPaths') || [];
     const currentStubPath = config.get<string>('stubPath') || '';
     const currentDiagnosticOverrides = config.get<Record<string, string>>('diagnosticSeverityOverrides') || {};
     const userStubPath = await this.resolveUserStubPath(currentStubPath);
-    const overlayStubPath = this.buildPylanceStubOverlay(stubsDir, userStubPath);
+    let overlayStubPath: string;
+    let overlayRefreshed = false;
+    try {
+      const overlay = this.buildPylanceStubOverlay(stubsDir, userStubPath);
+      overlayStubPath = overlay.stubPath;
+      overlayRefreshed = overlay.refreshed;
+    } catch (err) {
+      logWarn('Stubs', `Could not build Pylance stub overlay; using stubs directory directly: ${err instanceof Error ? err.message : String(err)}`);
+      overlayStubPath = stubsDir;
+    }
     const nextExtraPaths = this.replaceCanMVStubsPath(currentExtraPaths, stubsDir);
     const nextDiagnosticOverrides = {
       ...currentDiagnosticOverrides,
@@ -251,7 +355,11 @@ export class StubsService {
 
     if (!extraPathsChanged && !stubPathChanged && !diagnosticsChanged) {
       logInfo('Stubs', `Pylance stubs already configured: ${overlayStubPath}`);
-      return;
+      const pylanceReady = await this.ensurePylanceExtensionReady();
+      if (overlayRefreshed && pylanceReady) {
+        await this.showPylanceReloadPrompt(stubsDir, overlayStubPath);
+      }
+      return true;
     }
 
     const targets = workspace
@@ -270,24 +378,101 @@ export class StubsService {
         }
         const scope = target === vscode.ConfigurationTarget.Workspace ? 'workspace' : 'global';
         logInfo('Stubs', `Pylance python.analysis.stubPath configured (${scope}): ${overlayStubPath}`);
-        vscode.window.showInformationMessage(
-          t('CanMV: Pylance stubs configured. Reload window for full effect.')
-        );
-        return;
+        const pylanceReady = await this.ensurePylanceExtensionReady();
+        if (pylanceReady) {
+          await this.showPylanceReloadPrompt(stubsDir, overlayStubPath);
+        }
+        return true;
       } catch (err) {
         logWarn('Stubs', `Could not update Pylance settings (${target}): ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
     logError('Stubs', `Failed to configure Pylance stubs path: ${overlayStubPath}`);
+    void vscode.window.showErrorMessage(
+      t('CanMV: Failed to update Pylance settings. See the CanMV output for details.')
+    );
+    return false;
+  }
+
+  private async ensurePylanceExtensionReady(): Promise<boolean> {
+    const pylance = vscode.extensions.getExtension(StubsService.pylanceExtensionId);
+    if (!pylance) {
+      logWarn('Stubs', `Pylance extension is not available in this VS Code extension host: ${StubsService.pylanceExtensionId}`);
+      this.showPylanceWarning(
+        t('CanMV: Pylance is not available in this VS Code host. Install or enable Pylance for code completion tips.')
+      );
+      return false;
+    }
+
+    if (pylance.isActive) {
+      logInfo('Stubs', `Pylance extension active: ${pylance.id}`);
+      return true;
+    }
+
+    try {
+      await pylance.activate();
+      logInfo('Stubs', `Pylance extension activated: ${pylance.id}`);
+      return true;
+    } catch (err) {
+      logWarn('Stubs', `Could not activate Pylance extension: ${err instanceof Error ? err.message : String(err)}`);
+      this.showPylanceWarning(
+        t('CanMV: Pylance could not activate in this VS Code host. Code completion tips may not work.')
+      );
+      return false;
+    }
+  }
+
+  private showPylanceWarning(message: string): void {
+    if (this.pylanceWarningShown) return;
+
+    this.pylanceWarningShown = true;
+    const openExtensions = t('Open Extensions');
+    void vscode.window.showWarningMessage(message, openExtensions).then(choice => {
+      if (choice === openExtensions) {
+        void vscode.commands.executeCommand(
+          'workbench.extensions.search',
+          `@id:${StubsService.pylanceExtensionId}`
+        );
+      }
+    });
+  }
+
+  private async showPylanceReloadPrompt(stubsDir: string, overlayStubPath: string): Promise<void> {
+    const signature = crypto.createHash('sha256')
+      .update([
+        this.normalizeFsPathForCompare(stubsDir),
+        this.normalizeFsPathForCompare(overlayStubPath),
+        this.stubCacheSignature(stubsDir),
+      ].join('\n'))
+      .digest('hex');
+    const savedSignature = this.context?.workspaceState.get<string>(StubsService.reloadPromptSignatureKey) || '';
+    if (signature === this.reloadPromptSignature || signature === savedSignature) {
+      logInfo('Stubs', 'Pylance reload prompt already shown for the current stubs configuration');
+      return;
+    }
+
+    this.reloadPromptSignature = signature;
+    await this.context?.workspaceState.update(StubsService.reloadPromptSignatureKey, signature);
+    const reloadAction = t('Reload Window');
+    void vscode.window.showInformationMessage(
+      t('CanMV: Pylance stubs configured. Reload window for full effect.'),
+      reloadAction
+    ).then(choice => {
+      if (choice === reloadAction) {
+        void vscode.commands.executeCommand('workbench.action.reloadWindow');
+      }
+    });
   }
 
   private replaceCanMVStubsPath(extraPaths: string[], stubsDir: string): string[] {
     const next: string[] = [];
     let inserted = false;
+    let removed = 0;
 
     for (const entry of extraPaths) {
       if (this.isCanMVStubsPath(entry)) {
+        removed += 1;
         if (!inserted) {
           next.push(stubsDir);
           inserted = true;
@@ -301,6 +486,9 @@ export class StubsService {
       next.push(stubsDir);
     }
 
+    if (removed > 1) {
+      logInfo('Stubs', `Collapsed ${removed} CanMV python.analysis.extraPaths entries into the current stubs path`);
+    }
     return next;
   }
 
@@ -321,71 +509,221 @@ export class StubsService {
     return resolved;
   }
 
-  private buildPylanceStubOverlay(stubsDir: string, userStubPath: string): string {
+  private buildPylanceStubOverlay(stubsDir: string, userStubPath: string): PylanceStubOverlay {
     const overlayDir = this.pylanceOverlayDir();
-    this.resetPylanceStubOverlay(overlayDir);
-    this.linkOrCopyStubRoot(stubsDir, overlayDir, true);
-    if (userStubPath) {
-      this.linkOrCopyStubRoot(userStubPath, overlayDir, false);
+    const cacheSignature = this.stubCacheSignature(stubsDir);
+    const userStubSignature = userStubPath ? this.stubCacheSignature(userStubPath) : '';
+    if (this.isPylanceStubOverlayCurrent(overlayDir, stubsDir, userStubPath, cacheSignature, userStubSignature)) {
+      return { stubPath: overlayDir, refreshed: false };
     }
-    return overlayDir;
+
+    const tempDir = this.createPylanceOverlayTempDir(overlayDir);
+    try {
+      fs.mkdirSync(tempDir, { recursive: true });
+      this.copyStubRoot(stubsDir, tempDir, true);
+      if (userStubPath) {
+        this.copyStubRoot(userStubPath, tempDir, false);
+      }
+      if (!this.isStubRootCopied(stubsDir, tempDir)
+        || (userStubPath && !this.isMergedUserStubRootCopied(userStubPath, stubsDir, tempDir))) {
+        throw new Error('Pylance stub overlay verification failed');
+      }
+      this.writePylanceStubOverlayManifest(tempDir, stubsDir, userStubPath, cacheSignature, userStubSignature);
+      this.replacePylanceStubOverlay(tempDir, overlayDir);
+      return { stubPath: overlayDir, refreshed: true };
+    } catch (err) {
+      this.cleanupPylanceOverlayTempDir(tempDir);
+      throw err;
+    }
   }
 
-  private resetPylanceStubOverlay(overlayDir: string): void {
+  private isPylanceStubOverlayCurrent(
+    overlayDir: string,
+    stubsDir: string,
+    userStubPath: string,
+    cacheSignature: string,
+    userStubSignature: string,
+  ): boolean {
+    try {
+      if (!fs.statSync(overlayDir).isDirectory()) {
+        return false;
+      }
+      const manifestPath = path.join(overlayDir, StubsService.overlayManifestFile);
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Partial<PylanceStubOverlayManifest>;
+      const manifestMatches = manifest.version === 2
+        && this.pathsEqual(manifest.stubsDir || '', stubsDir)
+        && this.pathsEqual(manifest.userStubPath || '', userStubPath)
+        && manifest.cacheSignature === cacheSignature
+        && manifest.userStubSignature === userStubSignature;
+      return manifestMatches
+        && this.isStubRootCopied(stubsDir, overlayDir)
+        && (!userStubPath || this.isMergedUserStubRootCopied(userStubPath, stubsDir, overlayDir));
+    } catch {
+      return false;
+    }
+  }
+
+  private writePylanceStubOverlayManifest(
+    overlayDir: string,
+    stubsDir: string,
+    userStubPath: string,
+    cacheSignature: string,
+    userStubSignature: string,
+  ): void {
+    const manifest: PylanceStubOverlayManifest = {
+      version: 2,
+      stubsDir,
+      userStubPath,
+      cacheSignature,
+      userStubSignature,
+    };
+    fs.writeFileSync(
+      path.join(overlayDir, StubsService.overlayManifestFile),
+      `${JSON.stringify(manifest, null, 2)}\n`
+    );
+  }
+
+  private stubCacheSignature(stubsDir: string): string {
+    const stats = this.collectStubCacheStats(stubsDir);
+    return `${stats.files}:${stats.pyiFiles}:${Math.trunc(stats.maxMtimeMs)}`;
+  }
+
+  private createCacheTempDir(revision: string): string {
+    fs.mkdirSync(this.baseDir, { recursive: true });
+    return fs.mkdtempSync(path.join(this.baseDir, `${revision}.tmp-`));
+  }
+
+  private replaceCacheDir(tempDir: string, cacheDir: string): void {
+    if (!this.isCanMVStubsPath(tempDir)) {
+      throw new Error(`Refusing to use non-CanMV stubs temp path: ${tempDir}`);
+    }
+    if (!this.isCanMVStubsPath(cacheDir)) {
+      throw new Error(`Refusing to replace non-CanMV stubs cache path: ${cacheDir}`);
+    }
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+    fs.renameSync(tempDir, cacheDir);
+  }
+
+  private cleanupCacheTempDir(tempDir: string): void {
+    if (!tempDir) return;
+    try {
+      if (this.isCanMVStubsPath(tempDir)) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    } catch (err) {
+      logWarn('Stubs', `Could not remove temporary stubs cache: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private createPylanceOverlayTempDir(overlayDir: string): string {
+    const parentDir = path.dirname(overlayDir);
+    fs.mkdirSync(parentDir, { recursive: true });
+    return fs.mkdtempSync(path.join(parentDir, 'typings-'));
+  }
+
+  private replacePylanceStubOverlay(tempDir: string, overlayDir: string): void {
     if (!this.isCanMVOverlayPath(overlayDir)) {
-      throw new Error(`Refusing to reset non-CanMV Pylance overlay path: ${overlayDir}`);
+      throw new Error(`Refusing to replace non-CanMV Pylance overlay path: ${overlayDir}`);
     }
-    fs.rmSync(overlayDir, { recursive: true, force: true });
-    fs.mkdirSync(overlayDir, { recursive: true });
+    if (!this.isCanMVOverlayPath(tempDir)) {
+      throw new Error(`Refusing to use non-CanMV Pylance overlay temp path: ${tempDir}`);
+    }
+    try {
+      fs.rmSync(overlayDir, { recursive: true, force: true });
+    } catch (err) {
+      throw new Error(`Could not reset Pylance overlay: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    fs.renameSync(tempDir, overlayDir);
   }
 
-  private linkOrCopyStubRoot(sourceDir: string, overlayDir: string, overwrite: boolean): void {
+  private cleanupPylanceOverlayTempDir(tempDir: string): void {
+    try {
+      if (this.isCanMVOverlayPath(tempDir)) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    } catch (err) {
+      logWarn('Stubs', `Could not remove temporary Pylance overlay: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private copyStubRoot(sourceDir: string, overlayDir: string, overwrite: boolean): void {
     const normalizedSource = this.normalizeFsPathForCompare(sourceDir);
     const normalizedOverlay = this.normalizeFsPathForCompare(overlayDir);
     if (!normalizedSource || normalizedSource === normalizedOverlay) return;
 
-    let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(sourceDir, { withFileTypes: true });
+      const entries = fs.readdirSync(sourceDir, { withFileTypes: true });
+      for (const entry of entries) {
+        const source = path.join(sourceDir, entry.name);
+        const target = path.join(overlayDir, entry.name);
+        if (fs.existsSync(target)) {
+          if (!overwrite) continue;
+          fs.rmSync(target, { recursive: true, force: true });
+        }
+        fs.cpSync(source, target, { recursive: true, dereference: true, errorOnExist: true, force: false });
+      }
     } catch (err) {
-      logWarn('Stubs', `Could not read stub root for Pylance overlay: ${sourceDir}: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
-
-    for (const entry of entries) {
-      const source = path.join(sourceDir, entry.name);
-      const target = path.join(overlayDir, entry.name);
-      if (fs.existsSync(target)) {
-        if (!overwrite) continue;
-        fs.rmSync(target, { recursive: true, force: true });
-      }
-      this.linkOrCopyStubEntry(source, target, entry);
+      throw new Error(`Could not copy stub root into Pylance overlay: ${sourceDir}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  private linkOrCopyStubEntry(source: string, target: string, entry: fs.Dirent): void {
+  private isStubRootCopied(sourceDir: string, overlayDir: string): boolean {
     try {
-      if (entry.isSymbolicLink()) {
-        const realSource = fs.realpathSync(source);
-        const realEntry = fs.statSync(realSource);
-        const type = realEntry.isDirectory() ? this.directorySymlinkType() : 'file';
-        fs.symlinkSync(realSource, target, type);
-        return;
+      for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+        const source = path.join(sourceDir, entry.name);
+        const target = path.join(overlayDir, entry.name);
+        const sourceStat = fs.statSync(source);
+        const targetStat = fs.lstatSync(target);
+        if (targetStat.isSymbolicLink()) {
+          return false;
+        }
+        if (sourceStat.isDirectory()) {
+          if (!targetStat.isDirectory() || !this.isStubRootCopied(source, target)) {
+            return false;
+          }
+        } else if (!targetStat.isFile() || sourceStat.size !== targetStat.size) {
+          return false;
+        }
       }
-
-      const type = entry.isDirectory() ? this.directorySymlinkType() : 'file';
-      fs.symlinkSync(source, target, type);
+      return true;
     } catch {
-      try {
-        fs.cpSync(source, target, { recursive: true, dereference: true });
-      } catch (err) {
-        logWarn('Stubs', `Could not add stub entry to Pylance overlay: ${source}: ${err instanceof Error ? err.message : String(err)}`);
-      }
+      return false;
     }
   }
 
-  private directorySymlinkType(): fs.symlink.Type {
-    return process.platform === 'win32' ? 'junction' : 'dir';
+  private isMergedUserStubRootCopied(userStubPath: string, stubsDir: string, overlayDir: string): boolean {
+    try {
+      const canmvEntries = new Set(fs.readdirSync(stubsDir));
+      for (const entry of fs.readdirSync(userStubPath, { withFileTypes: true })) {
+        if (canmvEntries.has(entry.name)) {
+          continue;
+        }
+        const source = path.join(userStubPath, entry.name);
+        const target = path.join(overlayDir, entry.name);
+        if (!this.isStubEntryCopied(source, target)) {
+          return false;
+        }
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private isStubEntryCopied(source: string, target: string): boolean {
+    try {
+      const sourceStat = fs.statSync(source);
+      const targetStat = fs.lstatSync(target);
+      if (targetStat.isSymbolicLink()) {
+        return false;
+      }
+      if (sourceStat.isDirectory()) {
+        return targetStat.isDirectory() && this.isStubRootCopied(source, target);
+      }
+      return targetStat.isFile() && sourceStat.size === targetStat.size;
+    } catch {
+      return false;
+    }
   }
 
   private pylanceOverlayDir(): string {
@@ -430,6 +768,7 @@ export class StubsService {
 
   private isCanMVStubsPath(value: string): boolean {
     if (!value) return false;
+    if (this.hasCanMVManagedPathMarker(value, 'k230_canmv_stubs')) return true;
 
     const baseDir = this.normalizeFsPathForCompare(this.baseDir);
     const candidate = this.normalizeFsPathForCompare(value);
@@ -439,11 +778,24 @@ export class StubsService {
 
   private isCanMVOverlayPath(value: string): boolean {
     if (!value) return false;
+    if (this.hasCanMVManagedPathMarker(value, 'k230_canmv_pylance')) return true;
 
     const baseDir = this.normalizeFsPathForCompare(this.pylanceOverlayBaseDir);
     const candidate = this.normalizeFsPathForCompare(value);
     const relative = path.relative(baseDir, candidate);
     return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+  }
+
+  private hasCanMVManagedPathMarker(value: string, directoryName: string): boolean {
+    const normalized = this.expandHome(value)
+      .replace(/\\/g, '/')
+      .replace(/\/+/g, '/')
+      .trim();
+    const marker = `/.kendryte/${directoryName}`;
+    return normalized.endsWith(marker)
+      || normalized.includes(`${marker}/`)
+      || normalized === `.kendryte/${directoryName}`
+      || normalized.startsWith(`.kendryte/${directoryName}/`);
   }
 
   private pathsEqual(left: string, right: string): boolean {
@@ -517,17 +869,4 @@ export class StubsService {
     return false;
   }
 
-  private cleanupEmpty(targetDir: string): void {
-    try {
-      if (fs.existsSync(targetDir)) {
-        const entries = fs.readdirSync(targetDir);
-        const hasPyis = entries.some(f => f.endsWith('.pyi'));
-        if (!hasPyis && entries.length === 0) {
-          fs.rmdirSync(targetDir);
-        }
-      }
-    } catch {
-      // ignore cleanup errors
-    }
-  }
 }

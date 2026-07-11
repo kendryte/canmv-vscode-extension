@@ -59,13 +59,19 @@ func extractZipArchive(archivePath string, targetDir string) error {
 		if err != nil {
 			return err
 		}
-		err = writeArchiveFile(targetPath, mode.Perm(), src)
+		written, err := writeArchiveFile(targetPath, mode.Perm(), src)
 		closeErr := src.Close()
 		if err != nil {
 			return err
 		}
 		if closeErr != nil {
 			return closeErr
+		}
+		if entry.UncompressedSize64 != uint64(written) {
+			return fmt.Errorf("archive entry size mismatch for %s: wrote %d bytes, expected %d", entry.Name, written, entry.UncompressedSize64)
+		}
+		if err := verifyArchiveFile(targetPath, entry.Name, entry.UncompressedSize64); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -108,7 +114,7 @@ func extractTarGzArchive(archivePath string, targetDir string) error {
 				return err
 			}
 		case tar.TypeReg, tar.TypeRegA:
-			if err := writeArchiveFile(targetPath, header.FileInfo().Mode().Perm(), tarReader); err != nil {
+			if _, err := writeArchiveFile(targetPath, header.FileInfo().Mode().Perm(), tarReader); err != nil {
 				return err
 			}
 		}
@@ -152,9 +158,9 @@ func archiveEntryTarget(targetDir string, entryName string) (string, error) {
 	return targetPath, nil
 }
 
-func writeArchiveFile(targetPath string, mode os.FileMode, src io.Reader) error {
+func writeArchiveFile(targetPath string, mode os.FileMode, src io.Reader) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return err
+		return 0, err
 	}
 	if mode == 0 {
 		mode = 0o644
@@ -162,12 +168,26 @@ func writeArchiveFile(targetPath string, mode os.FileMode, src io.Reader) error 
 
 	dst, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	_, copyErr := io.Copy(dst, src)
+	written, copyErr := io.Copy(dst, src)
 	closeErr := dst.Close()
 	if copyErr != nil {
-		return copyErr
+		return written, copyErr
 	}
-	return closeErr
+	return written, closeErr
+}
+
+func verifyArchiveFile(targetPath string, entryName string, expectedSize uint64) error {
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		return fmt.Errorf("archive entry was not created for %s: %w", entryName, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("archive entry is not a regular file after extraction: %s", entryName)
+	}
+	if uint64(info.Size()) != expectedSize {
+		return fmt.Errorf("archive entry size mismatch on disk for %s: got %d bytes, expected %d", entryName, info.Size(), expectedSize)
+	}
+	return nil
 }
