@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0
+
+- Improved ZIP extraction verification for nested stub files across supported platforms
+- Added recursive stub cache validation and staged cache replacement to prevent incomplete downloads from becoming active
+- Reworked the Pylance stub overlay to use verified file and directory copies instead of symlinks or junctions
+- Added overlay versioning and signatures so stale or incomplete Pylance stub paths are rebuilt automatically
+- Improved Pylance availability, configuration failure, download progress, and reload notifications
+- Prevented repeated reload prompts for an unchanged Pylance stubs configuration
+
 ## 0.8.0
 
 - Added Chinese README for CanMV extension users
