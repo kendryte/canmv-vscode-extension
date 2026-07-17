@@ -12,6 +12,10 @@ interface BackendLike {
   onDisconnect?: vscode.Event<void>;
 }
 
+export interface SessionRequestOptions {
+  timeoutMs?: number;
+}
+
 /**
  * Session manages the UART port lifecycle and request timeout enforcement.
  * Once connected, the port stays open across state transitions
@@ -106,19 +110,20 @@ export class Session implements vscode.Disposable {
    * Send a protocol Request with timeout enforcement.
    * Session layer owns timeout — BackendApi has no built-in timeout.
    */
-  async request(req: Request<string>): Promise<Response | ProtocolError> {
+  async request(req: Request<string>, options: SessionRequestOptions = {}): Promise<Response | ProtocolError> {
+    const timeoutMs = options.timeoutMs ?? this.requestTimeout;
     try {
       return await this.withTimeout(
         this.backend.request(req),
-        this.requestTimeout
+        timeoutMs
       );
     } catch {
-      logWarn('Session', `Request timed out: ${req.method}`);
+      logWarn('Session', `Request timed out: ${req.method} after ${timeoutMs}ms`);
       return {
         id: req.id,
         error: {
           code: ErrorCodes.CONNECTION.TIMEOUT,
-          message: `Request '${req.method}' timed out after ${this.requestTimeout}ms`,
+          message: `Request '${req.method}' timed out after ${timeoutMs}ms`,
         },
       };
     }
@@ -170,11 +175,18 @@ export class Session implements vscode.Disposable {
   }
 
   private withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-    return Promise.race([
-      promise,
-      new Promise<T>((_, reject) =>
-        setTimeout(() => reject(new Error(`Operation timed out after ${ms}ms`)), ms)
-      ),
-    ]);
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`Operation timed out after ${ms}ms`)), ms);
+      promise.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      );
+    });
   }
 }

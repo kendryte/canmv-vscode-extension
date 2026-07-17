@@ -77,3 +77,33 @@ func TestSyncTimesOutWithoutMarker(t *testing.T) {
 		t.Fatal("expected error when marker never arrives, got nil")
 	}
 }
+
+func TestReadFileSendsRequestedRange(t *testing.T) {
+	path := "/sdcard/model.kmodel"
+	data := []byte("data")
+	response := make([]byte, 12+len(data))
+	binary.LittleEndian.PutUint32(response[4:8], uint32(len(data)))
+	copy(response[12:], data)
+	port := &mockPort{reads: [][]byte{response[:12], response[12:]}}
+	b := &Board{port: port}
+
+	got, err := b.ReadFile(path, 7, uint32(len(data)))
+	if err != nil {
+		t.Fatalf("ReadFile() returned error: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("ReadFile() = %q, want %q", got, data)
+	}
+	if len(port.written) < 14 {
+		t.Fatalf("ReadFile() wrote only %d bytes", len(port.written))
+	}
+	if port.written[0] != CmdPrefix || port.written[1] != CmdReadFile {
+		t.Fatalf("ReadFile() command = %x %x, want %x %x", port.written[0], port.written[1], CmdPrefix, CmdReadFile)
+	}
+	if got := binary.LittleEndian.Uint32(port.written[6:10]); got != 7 {
+		t.Fatalf("ReadFile() offset = %d, want 7", got)
+	}
+	if got := binary.LittleEndian.Uint32(port.written[10:14]); got != uint32(len(data)) {
+		t.Fatalf("ReadFile() size = %d, want %d", got, len(data))
+	}
+}

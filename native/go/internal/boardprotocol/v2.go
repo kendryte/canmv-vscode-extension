@@ -62,6 +62,10 @@ func (p *protocolV2) QueryFileStat(board *usbdbg.Board, path string) (usbdbg.Fil
 	return board.QueryFileStat(path)
 }
 
+func (p *protocolV2) ReadFileChunk(board *usbdbg.Board, path string, offset uint32, size uint32) ([]byte, error) {
+	return board.ReadFile(path, offset, size)
+}
+
 func (p *protocolV2) ReadFileAll(board *usbdbg.Board, path string, chunkSize uint32) ([]byte, error) {
 	return board.ReadFileAll(path, chunkSize)
 }

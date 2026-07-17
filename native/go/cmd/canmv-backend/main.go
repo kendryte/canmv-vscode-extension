@@ -569,7 +569,16 @@ func (s *server) readFile(params map[string]interface{}) (interface{}, int, stri
 	if !s.hasCapability(usbdbg.CapReadFile) {
 		return nil, 4008, "File read is not supported by this firmware"
 	}
-	data, err := s.currentProtocol().ReadFileAll(board, stringParam(params, "path", ""), 128*1024)
+	path := stringParam(params, "path", "")
+	var data []byte
+	var err error
+	if _, ranged := params["offset"]; ranged {
+		offset := uint32Param(params, "offset", 0)
+		size := uint32Param(params, "size", 128*1024)
+		data, err = s.currentProtocol().ReadFileChunk(board, path, offset, size)
+	} else {
+		data, err = s.currentProtocol().ReadFileAll(board, path, 128*1024)
+	}
 	if err != nil {
 		return nil, 4003, err.Error()
 	}
@@ -1415,6 +1424,14 @@ func intParam(params map[string]interface{}, key string, fallback int) int {
 	default:
 		return fallback
 	}
+}
+
+func uint32Param(params map[string]interface{}, key string, fallback uint32) uint32 {
+	value := intParam(params, key, int(fallback))
+	if value < 0 {
+		return fallback
+	}
+	return uint32(value)
 }
 
 func virtualTouchStatusResult(status usbdbg.VirtualTouchStatus) map[string]interface{} {

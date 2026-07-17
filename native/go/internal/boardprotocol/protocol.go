@@ -27,6 +27,7 @@ type Handler interface {
 	VirtualTouchEvent(board *usbdbg.Board, event usbdbg.VirtualTouchEvent) error
 	ListDir(board *usbdbg.Board, path string) ([]usbdbg.FileEntry, error)
 	QueryFileStat(board *usbdbg.Board, path string) (usbdbg.FileStat, error)
+	ReadFileChunk(board *usbdbg.Board, path string, offset uint32, size uint32) ([]byte, error)
 	ReadFileAll(board *usbdbg.Board, path string, chunkSize uint32) ([]byte, error)
 	WriteFile(board *usbdbg.Board, path string, data []byte, chunkSize uint32) uint32
 	SimpleFileOp(board *usbdbg.Board, opcode byte, payload []byte) uint32

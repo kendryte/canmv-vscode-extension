@@ -240,9 +240,6 @@ export function activate(context: vscode.ExtensionContext) {
     void vscode.commands.executeCommand('setContext', 'canmv.scriptBusy', value);
     updateTerminalInputState();
     updateExplorerConnectionState();
-    if (!value) {
-      refreshExplorerSoon(250);
-    }
   };
   const beginScriptOperation = (options: { allowWhileConnectionBusy?: boolean; skipCooldown?: boolean } = {}) => {
     if (scriptBusy || (connectionBusy && !options.allowWhileConnectionBusy)) return false;
@@ -295,9 +292,6 @@ export function activate(context: vscode.ExtensionContext) {
     controlProvider?.setState({ scriptRunning: value });
     updateTerminalInputState();
     updateExplorerConnectionState();
-    if (!value) {
-      refreshExplorerSoon(250);
-    }
     onScriptRunningContextChanged();
   };
   const boardStatusText = (_info: BoardInfo) => {
@@ -367,7 +361,6 @@ export function activate(context: vscode.ExtensionContext) {
     remoteFilesPauseTimer = setTimeout(() => {
       remoteFilesPauseTimer = undefined;
       updateExplorerConnectionState();
-      refreshExplorerSoon(100);
     }, remainingMs);
   };
   const explorerCanBrowse = () => remoteFilesAvailable();
@@ -376,7 +369,9 @@ export function activate(context: vscode.ExtensionContext) {
     void vscode.commands.executeCommand('setContext', 'canmv.remoteFilesAvailable', filesAvailable);
     const activeExplorer = explorer;
     if (!activeExplorer) return;
-    activeExplorer.setConnectionState(filesAvailable, !connected || boardSupportsFileExplorer(), remoteFilesUnavailableMessage());
+    // Keep the last tree visible while an operation temporarily blocks new file requests.
+    const canDisplayFiles = connected && boardReady && boardSupportsFileExplorer();
+    activeExplorer.setConnectionState(canDisplayFiles, !connected || boardSupportsFileExplorer(), remoteFilesUnavailableMessage());
   };
   const updateTerminalInputState = () => {
     const replInputSupported = boardSupportsReplInput();
@@ -973,8 +968,6 @@ export function activate(context: vscode.ExtensionContext) {
       if (options.stopPreview) {
         await stopPreviewAfterScript();
       }
-      refreshExplorerSoon(300);
-      refreshExplorerSoon(1200);
     } finally {
       scriptStopInFlight = false;
       endScriptOperation();
@@ -1705,10 +1698,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
       if (s === 'finished') {
         setScriptRunningContext(false);
-        void stopPreviewAfterScript().finally(() => {
-          refreshExplorerSoon(300);
-          refreshExplorerSoon(1200);
-        });
+        void stopPreviewAfterScript();
       }
     } else if (event.event === 'boardReady') {
       markBoardReadyEvent();

@@ -38,8 +38,11 @@ interface TransferStats {
 }
 
 interface ProtocolRequester {
-  request(req: Request<string>): Promise<Response | ProtocolError>;
+  request(req: Request<string>, options?: { timeoutMs?: number }): Promise<Response | ProtocolError>;
 }
+
+const REMOTE_FILE_CHUNK_SIZE = 128 * 1024;
+const REMOTE_FILE_CHUNK_TIMEOUT_MS = 30_000;
 
 function mutationSucceeded(result: unknown): boolean {
   return !!(result as FileMutationResult).success;
@@ -103,27 +106,53 @@ export class FileService {
       }
     }
 
-    const req = createRequest(Methods.ioReadFile, { path: cacheKey });
-    const result = await this.requester.request(req);
+    const data = stat.size > REMOTE_FILE_CHUNK_SIZE
+      ? await this.readFileInChunks(cacheKey, stat.size)
+      : await this.readFilePayload(cacheKey);
+    if (data.byteLength !== stat.size) {
+      this.invalidateCache(cacheKey);
+      logError('Files', `Read incomplete: ${cacheKey}: expected ${formatFileSize(stat.size)}, got ${formatFileSize(data.byteLength)}`);
+      throw new Error(t('Read incomplete: expected {expected} bytes, got {actual}', { expected: stat.size, actual: data.byteLength }));
+    }
+    this.readCache.set(cacheKey, {
+      data: new Uint8Array(data),
+      size: stat.size,
+      mtime: stat.mtime,
+    });
+    if (shouldLogSuccess) {
+      logInfo('Files', `Read ${cacheKey} (${formatFileSize(data.byteLength)}, ${Date.now() - startedAt}ms)`);
+    }
+    return data;
+  }
+
+  private async readFileInChunks(remotePath: string, fileSize: number): Promise<Uint8Array> {
+    const data = new Uint8Array(fileSize);
+    let offset = 0;
+    while (offset < fileSize) {
+      const size = Math.min(REMOTE_FILE_CHUNK_SIZE, fileSize - offset);
+      const chunk = await this.readFilePayload(remotePath, { offset, size });
+      if (chunk.byteLength === 0 || chunk.byteLength > size) {
+        this.invalidateCache(remotePath);
+        logError('Files', `Read incomplete: ${remotePath} at offset ${offset}: expected at most ${formatFileSize(size)}, got ${formatFileSize(chunk.byteLength)}`);
+        throw new Error(t('Read incomplete: expected {expected} bytes, got {actual}', { expected: fileSize, actual: offset + chunk.byteLength }));
+      }
+      data.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return data;
+  }
+
+  private async readFilePayload(
+    remotePath: string,
+    range?: { offset: number; size: number },
+  ): Promise<Uint8Array> {
+    const req = createRequest(Methods.ioReadFile, range ? { path: remotePath, ...range } : { path: remotePath });
+    const result = await this.requester.request(req, { timeoutMs: REMOTE_FILE_CHUNK_TIMEOUT_MS });
     if (isResponse(result)) {
-      const data = decodeFilePayload(result.result as { data?: number[]; dataBase64?: string });
-      if (data.byteLength !== stat.size) {
-        this.invalidateCache(cacheKey);
-        logError('Files', `Read incomplete: ${cacheKey}: expected ${formatFileSize(stat.size)}, got ${formatFileSize(data.byteLength)}`);
-        throw new Error(t('Read incomplete: expected {expected} bytes, got {actual}', { expected: stat.size, actual: data.byteLength }));
-      }
-      this.readCache.set(cacheKey, {
-        data: new Uint8Array(data),
-        size: stat.size,
-        mtime: stat.mtime,
-      });
-      if (shouldLogSuccess) {
-        logInfo('Files', `Read ${cacheKey} (${formatFileSize(data.byteLength)}, ${Date.now() - startedAt}ms)`);
-      }
-      return data;
+      return decodeFilePayload(result.result as { data?: number[]; dataBase64?: string });
     }
     const message = (result as ProtocolError).error.message;
-    logWarn('Files', `Read failed: ${cacheKey}: ${message}`);
+    logWarn('Files', `Read failed: ${remotePath}: ${message}`);
     throw new Error(message);
   }
 

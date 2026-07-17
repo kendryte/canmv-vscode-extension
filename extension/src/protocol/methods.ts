@@ -161,7 +161,7 @@ export const Methods = {
   /** Read file content from the board. */
   ioReadFile: {
     method: 'io.readFile' as const,
-    params: {} as { path: string },
+    params: {} as { path: string; offset?: number; size?: number },
     result: {} as { data?: number[]; dataBase64?: string },
     errors: { 4001: 'File not found', 4003: 'Read error', 4008: 'File read unsupported' },
   },

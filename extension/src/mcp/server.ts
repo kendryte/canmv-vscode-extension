@@ -60,6 +60,8 @@ const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'canmv-k230';
 const DEFAULT_BAUD_RATE = readNumberEnv('CANMV_BAUD_RATE', 12000000);
 const REQUEST_TIMEOUT_MS = 15000;
+const REMOTE_FILE_CHUNK_SIZE = 128 * 1024;
+const REMOTE_FILE_CHUNK_TIMEOUT_MS = 30_000;
 const BOARD_READY_TIMEOUT_MS = 5000;
 const DEFAULT_READ_LIMIT = 64 * 1024;
 const MAX_READ_LIMIT = 256 * 1024;
@@ -668,10 +670,39 @@ class CanmvMcpServer {
   }
 
   private async readRemoteFileBuffer(remotePath: string): Promise<Buffer> {
-    const result = await this.requestResult(Methods.ioReadFile, { path: remotePath }) as { data?: number[]; dataBase64?: string };
-    return typeof result.dataBase64 === 'string'
-      ? Buffer.from(result.dataBase64, 'base64')
-      : Buffer.from(result.data || []);
+    const stat = await this.requestResult(Methods.ioQueryFileStat, { path: remotePath }) as {
+      exists?: boolean;
+      type?: string;
+      size?: number;
+    };
+    if (!stat.exists) {
+      throw new Error(`Remote file not found: ${remotePath}`);
+    }
+    if (stat.type === 'directory') {
+      throw new Error(`Remote path is a folder: ${remotePath}`);
+    }
+    const fileSize = stat.size || 0;
+    const data = Buffer.alloc(fileSize);
+    let offset = 0;
+    while (offset < fileSize) {
+      const size = Math.min(REMOTE_FILE_CHUNK_SIZE, fileSize - offset);
+      const result = await this.requestResult(
+        Methods.ioReadFile,
+        fileSize > REMOTE_FILE_CHUNK_SIZE
+          ? { path: remotePath, offset, size }
+          : { path: remotePath },
+        { timeoutMs: REMOTE_FILE_CHUNK_TIMEOUT_MS },
+      ) as { data?: number[]; dataBase64?: string };
+      const chunk = typeof result.dataBase64 === 'string'
+        ? Buffer.from(result.dataBase64, 'base64')
+        : Buffer.from(result.data || []);
+      if (chunk.byteLength === 0 || chunk.byteLength > size) {
+        throw new Error(`Read incomplete: ${remotePath} at offset ${offset}`);
+      }
+      chunk.copy(data, offset);
+      offset += chunk.byteLength;
+    }
+    return data;
   }
 
   private async downloadFileToHost(args: Record<string, unknown>): Promise<unknown> {
@@ -809,12 +840,14 @@ class CanmvMcpServer {
   private async requestResult(
     method: { method: string },
     params: Record<string, unknown>,
-    options: { autoConnect?: boolean } = {},
+    options: { autoConnect?: boolean; timeoutMs?: number } = {},
   ): Promise<unknown> {
     if (options.autoConnect !== false && shouldAutoConnectForMethod(method.method) && !this.boardInfo) {
       await this.connectBoard();
     }
-    const result = await this.backend.request(createRequest(method as never, params as never));
+    const result = await this.backend.request(createRequest(method as never, params as never), {
+      timeoutMs: options.timeoutMs,
+    });
     this.scheduleIdleDisconnect();
     if (isResponse(result)) {
       return result.result;
@@ -965,13 +998,14 @@ class CanmvBackend {
     this.frameListeners.push(listener);
   }
 
-  async request(req: Request<string>): Promise<Response | ProtocolError> {
+  async request(req: Request<string>, options: { timeoutMs?: number } = {}): Promise<Response | ProtocolError> {
     await this.open();
     return new Promise((resolve) => {
+      const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
       const timer = setTimeout(() => {
         this.pending.delete(req.id);
-        resolve({ id: req.id, error: { code: 1002, message: `Request '${req.method}' timed out after ${REQUEST_TIMEOUT_MS}ms` } });
-      }, REQUEST_TIMEOUT_MS);
+        resolve({ id: req.id, error: { code: 1002, message: `Request '${req.method}' timed out after ${timeoutMs}ms` } });
+      }, timeoutMs);
       this.pending.set(req.id, { resolve, timer });
       const wire: WireMessage = this.codec.encodeRequest(req);
       const payload = Buffer.from(wire, 'utf8');

@@ -70,6 +70,10 @@ func (p *legacyProtocol) QueryFileStat(board *usbdbg.Board, path string) (usbdbg
 	return usbdbg.FileStat{}, unsupportedError("file stat")
 }
 
+func (p *legacyProtocol) ReadFileChunk(board *usbdbg.Board, path string, offset uint32, size uint32) ([]byte, error) {
+	return nil, unsupportedError("file read")
+}
+
 func (p *legacyProtocol) ReadFileAll(board *usbdbg.Board, path string, chunkSize uint32) ([]byte, error) {
 	return nil, unsupportedError("file read")
 }

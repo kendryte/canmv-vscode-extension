@@ -28,10 +28,15 @@ export class CanmvExplorer implements vscode.TreeDataProvider<FileTreeItem> {
   }
 
   setConnectionState(connected: boolean, fileExplorerSupported: boolean, unavailableMessage = t('Not connected')): void {
+    const shouldRefresh = this.connected !== connected
+      || this.fileExplorerSupported !== fileExplorerSupported
+      || (!connected && this.unavailableMessage !== unavailableMessage);
     this.connected = connected;
     this.fileExplorerSupported = fileExplorerSupported;
     this.unavailableMessage = unavailableMessage;
-    this.refresh();
+    if (shouldRefresh) {
+      this.refresh();
+    }
   }
 
   refresh(): void {
