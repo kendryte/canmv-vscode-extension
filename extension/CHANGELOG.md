@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1
+
+- Fixed large remote file downloads by reading files in bounded chunks instead of one timeout-prone response
+- Preserved the expanded remote file tree while scripts start or stop instead of temporarily hiding and rebuilding it
+
 ## 0.9.0
 
 - Improved ZIP extraction verification for nested stub files across supported platforms
