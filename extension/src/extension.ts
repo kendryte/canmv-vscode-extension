@@ -106,7 +106,10 @@ export function activate(context: vscode.ExtensionContext) {
 
   const boardService = new BoardService(session, new BoardDetector(session));
   const scriptService = new ScriptService(session);
-  const fileService = new FileService(session);
+  const fileService = new FileService(
+    session,
+    () => vscode.workspace.getConfiguration('canmv').get<boolean>('autoMinifyStartupScripts', true),
+  );
   const pkg = context.extension.packageJSON as { displayName?: string; name?: string; version?: string };
   const extensionName = pkg.displayName || pkg.name || 'CanMV';
   const extensionVersion = pkg.version || 'unknown';
@@ -1180,6 +1183,12 @@ export function activate(context: vscode.ExtensionContext) {
       }
       return fileService.listDir(path);
     },
+    listDirPage: async (path: string, offset: number) => {
+      if (!explorerCanBrowse()) {
+        return { entries: [] };
+      }
+      return fileService.listDirPage(path, offset);
+    },
   });
   explorer = canmvExplorer;
   const treeView = vscode.window.createTreeView('canmv.explorer', {
@@ -1197,6 +1206,7 @@ export function activate(context: vscode.ExtensionContext) {
   };
   updateExplorerSelectionContexts();
   context.subscriptions.push(treeView.onDidChangeSelection(updateExplorerSelectionContexts));
+  context.subscriptions.push(treeView.onDidExpandElement((event) => canmvExplorer.resumeListing(event.element)));
   controlProvider = new CanmvControlViewProvider(context);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('canmv.controls', controlProvider, {

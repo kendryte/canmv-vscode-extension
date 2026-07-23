@@ -74,7 +74,7 @@
   "Delete": "删除",
   "Delete {label} \"{name}\" from CanMV?": "要从 CanMV 删除{label} \"{name}\" 吗？",
   "Sync remote file": "同步远程文件",
-  "CanMV: No CanMV device detected. Connect the board via USB or configure canmv.serialPath in settings.": "CanMV: 未检测到 CanMV 设备。请通过 USB 连接开发板，或在设置中配置 canmv.serialPath。",
+  "CanMV: No CanMV device detected. Connect the board via USB and try again.": "CanMV: 未检测到 CanMV 设备。请通过 USB 连接开发板后重试。",
   "Serial {serialNumber}": "序列号 {serialNumber}",
   "Select CanMV device": "选择 CanMV 设备",
   "CanMV: Connected - {boardType} (FW {firmwareVersion})": "CanMV: 已连接 - {boardType} (固件 {firmwareVersion})",

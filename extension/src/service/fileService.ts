@@ -5,12 +5,18 @@ import { Request, Response, isResponse } from '../protocol/types';
 import type { ProtocolError } from '../protocol/types';
 import { logDebug, logError, logInfo, logWarn } from '../output';
 import { t } from '../i18n';
+import { minifyStartupScript } from './startupScript';
 
 export interface FileEntry {
   name: string;
   type: 'file' | 'directory';
   size: number;
   mtime?: number;
+}
+
+export interface DirectoryPage {
+  entries: FileEntry[];
+  nextOffset?: number;
 }
 
 export interface FileStat {
@@ -43,6 +49,8 @@ interface ProtocolRequester {
 
 const REMOTE_FILE_CHUNK_SIZE = 128 * 1024;
 const REMOTE_FILE_CHUNK_TIMEOUT_MS = 30_000;
+const REMOTE_DIRECTORY_LIST_TIMEOUT_MS = 30_000;
+const MAX_DIRECTORY_LIST_PAGES = 100_000;
 
 function mutationSucceeded(result: unknown): boolean {
   return !!(result as FileMutationResult).success;
@@ -55,17 +63,43 @@ function joinRemotePath(parent: string, name: string): string {
 export class FileService {
   private readonly readCache = new Map<string, CachedFile>();
 
-  constructor(private requester: ProtocolRequester) {}
+  constructor(
+    private requester: ProtocolRequester,
+    private readonly shouldMinifyStartupScripts: () => boolean = () => true,
+  ) {}
 
   async listDir(path: string): Promise<FileEntry[]> {
-    const req = createRequest(Methods.ioListDir, { path });
-    const result = await this.requester.request(req);
-    if (isResponse(result)) {
-      return (result.result as { entries: FileEntry[] }).entries;
+    const entries: FileEntry[] = [];
+    let offset = 0;
+    for (let pageCount = 0; pageCount < MAX_DIRECTORY_LIST_PAGES; pageCount++) {
+      const page = await this.listDirPage(path, offset);
+      entries.push(...page.entries);
+      if (page.nextOffset === undefined) {
+        return entries;
+      }
+      offset = page.nextOffset;
     }
-    const message = (result as ProtocolError).error.message;
-    logWarn('Files', `List failed: ${path}: ${message}`);
-    throw new Error(message);
+    throw new Error(`Directory listing exceeded ${MAX_DIRECTORY_LIST_PAGES} pages: ${path}`);
+  }
+
+  async listDirPage(path: string, offset = 0): Promise<DirectoryPage> {
+    const req = createRequest(Methods.ioListDir, { path, offset });
+    const result = await this.requester.request(req, { timeoutMs: REMOTE_DIRECTORY_LIST_TIMEOUT_MS });
+    if (!isResponse(result)) {
+      const message = (result as ProtocolError).error.message;
+      logWarn('Files', `List failed: ${path}: ${message}`);
+      throw new Error(message);
+    }
+
+    const page = result.result as { entries?: FileEntry[]; nextOffset?: number };
+    if (!Array.isArray(page.entries)) {
+      throw new Error(`Invalid directory listing response for ${path}`);
+    }
+    if (page.nextOffset !== undefined &&
+      (!Number.isSafeInteger(page.nextOffset) || page.nextOffset <= offset || page.nextOffset > 0xffff_ffff)) {
+      throw new Error(`Invalid directory listing continuation for ${path}`);
+    }
+    return { entries: page.entries, nextOffset: page.nextOffset };
   }
 
   async statFile(path: string): Promise<FileStat> {
@@ -159,18 +193,19 @@ export class FileService {
   async writeFile(path: string, data: Uint8Array, options?: { logSuccess?: boolean }): Promise<boolean> {
     const shouldLogSuccess = options?.logSuccess ?? true;
     const startedAt = Date.now();
-    const req = createRequest(Methods.ioWriteFile, { path, dataBase64: Buffer.from(data).toString('base64') });
+    const writeData = minifyStartupScript(path, data, this.shouldMinifyStartupScripts());
+    const req = createRequest(Methods.ioWriteFile, { path, dataBase64: Buffer.from(writeData).toString('base64') });
     const result = await this.requester.request(req);
     if (isResponse(result)) {
       const success = (result.result as { success: boolean }).success;
       if (success) {
-        await this.updateCachedWrite(path, data);
+        await this.updateCachedWrite(path, writeData);
         if (shouldLogSuccess) {
-          logInfo('Files', `Wrote ${path} (${formatFileSize(data.byteLength)}, ${Date.now() - startedAt}ms)`);
+          logInfo('Files', `Wrote ${path} (${formatFileSize(writeData.byteLength)}, ${Date.now() - startedAt}ms)`);
         }
       } else {
         this.invalidateCache(path);
-        logWarn('Files', `Write rejected: ${path} (${formatFileSize(data.byteLength)})`);
+        logWarn('Files', `Write rejected: ${path} (${formatFileSize(writeData.byteLength)})`);
       }
       return success;
     }

@@ -11,7 +11,7 @@ The CanMV for Visual Studio Code extension brings CanMV K230 board development i
 ## Features
 
 - Connect and disconnect CanMV K230 boards from the CanMV activity bar or Command Palette.
-- Auto-detect supported boards by USB VID/PID `1209:abd1`, with a manual serial path override when needed.
+- Auto-detect supported boards by USB VID/PID `1209:abd1`.
 - Use legacy and v2 board protocol support through backend capability negotiation.
 - Run the active Python file on the board, stop a running script, or run a Python file directly from the device tree.
 - Preview live IDE framebuffer images with fit/original-size modes, rotation, PNG capture, pixel RGB picking, ROI histogram sampling, video recording, FPS display, and RGB/grayscale/LAB/YUV histograms with hover readouts.
@@ -19,7 +19,7 @@ The CanMV for Visual Studio Code extension brings CanMV K230 board development i
 - Send virtual touch clicks from the preview when the connected firmware reports virtual touch support.
 - Browse mounted device storage, including `/sdcard`, `/data`, and `/udisk`.
 - Create, rename, delete, upload, download, open, edit, and auto-sync remote files.
-- Save the active editor directly as `/sdcard/main.py` or `/sdcard/boot.py`.
+- Save the active editor directly as `/sdcard/main.py` or `/sdcard/boot.py`, with optional minification before upload.
 - Use the CanMV Terminal panel for board output, REPL input, Ctrl-C script interrupt, log clearing, and log export.
 - Browse downloaded official CanMV examples, open examples as editable unsaved buffers, reveal them on disk, and run Python examples on the board.
 - Expose a CanMV MCP server for compatible VS Code AI clients, with board detection, connection, script, terminal, remote filesystem, examples, and stubs tools.
@@ -60,7 +60,7 @@ Run `CanMV: Connect Board`. The extension starts the backend, detects the board,
 
 On activation, the extension resolves `firmware/latest` and uses that firmware manifest to select default stubs and examples. After a board connects, it resolves `firmware/<full-commit-hash>/manifest.json` and switches to resources matching the connected firmware. If the exact manifest is unavailable, the extension falls back to the latest manifest and then to usable local caches.
 
-If auto-detection does not find the board, set `canmv.serialPath` to a serial device path such as `/dev/ttyACM0`. When `canmv.serialPath` is set, `canmv.baudRate` is used for the connection.
+The extension always auto-detects supported USB boards. When more than one board is found, select one from the device picker.
 
 ### Run a Script
 
@@ -120,6 +120,8 @@ Use the editor context menu while connected:
 - `CanMV: Save as main.py` writes the active editor to `/sdcard/main.py`.
 - `CanMV: Save as boot.py` writes the active editor to `/sdcard/boot.py`.
 
+When `canmv.autoMinifyStartupScripts` is enabled (the default), startup-file saves minify the uploaded source: `#` comments, standalone triple-quoted comment blocks, blank lines, and trailing whitespace are removed. Strings used as values remain unchanged, and the active editor remains unchanged. Disable the setting to upload the source unchanged.
+
 ### Use the Terminal
 
 The CanMV Terminal panel keeps recent scrollback, mirrors board/script output, and accepts REPL input when the board is connected and no script is running. Terminal input is disabled while a script runs, except Ctrl-C, which requests a script stop. The terminal webview also supports clearing output and saving the log.
@@ -128,7 +130,7 @@ The CanMV Terminal panel keeps recent scrollback, mirrors board/script output, a
 
 The extension contributes a `CanMV MCP Server` definition to VS Code. Compatible MCP clients can discover tools for capability analysis, board detection/connection, script execution, preview frames, virtual touch, terminal input/output, remote filesystem operations, host-side artifact saving, and read-only access to cached CanMV examples and MicroPython stubs.
 
-The MCP server runs as a standalone stdio Node process and uses the same bundled backend as the extension. It honors `canmv.backendPath`, `canmv.serialPath`, and `canmv.baudRate` through environment passed by the extension. Example and stub tools read the local caches under `~/.kendryte/k230_canmv_examples` and `~/.kendryte/k230_canmv_stubs`, so refresh/connect once if those caches are empty.
+The MCP server runs as a standalone stdio Node process and always uses the bundled backend. It receives `canmv.baudRate` from the extension; MCP clients may also pass an explicit serial port to `canmv_connect_board`. Example and stub tools read the local caches under `~/.kendryte/k230_canmv_examples` and `~/.kendryte/k230_canmv_stubs`, so refresh/connect once if those caches are empty.
 
 Board-facing MCP tools auto-connect when hardware access is needed and keep the board session alive for related follow-up calls, such as running a script, starting preview, and reading a frame. The server disconnects on `canmv_disconnect_board`, when the MCP client exits, or after an idle timeout. Set `CANMV_MCP_IDLE_DISCONNECT_MS` to adjust the timeout; the default is 120000 milliseconds.
 
@@ -186,13 +188,10 @@ For best script generation, the MCP server instructs AI clients to call `canmv_r
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `canmv.serialPath` | `""` | Serial device path. Leave empty to auto-detect supported CanMV boards by USB VID/PID `1209:abd1`. |
-| `canmv.baudRate` | `12000000` | Serial baud rate used when `canmv.serialPath` is set manually. |
-| `canmv.backendPath` | `""` | Path to a custom `canmv-backend` executable. Leave empty to use the bundled backend. |
+| `canmv.baudRate` | `12000000` | Serial baud rate used to connect detected boards. |
 | `canmv.autoReconnect` | `true` | Automatically reconnect after an unexpected disconnect. |
+| `canmv.autoMinifyStartupScripts` | `true` | Minify `/sdcard/main.py` and `/sdcard/boot.py` before upload. |
 | `canmv.stubsAutoDownload` | `true` | Automatically download K230 MicroPython stubs and examples when needed. |
-
-The backend path can also be overridden with the `CANMV_BACKEND_PATH` environment variable.
 
 ## Firmware Resources, Examples, and Python Stubs
 
@@ -252,7 +251,7 @@ Supported package targets are:
 - `darwin-x64`
 - `darwin-arm64`
 
-For local troubleshooting, build a backend from `native/go` and set `canmv.backendPath` or `CANMV_BACKEND_PATH` to the resulting executable.
+For local troubleshooting, rebuild and stage the current-platform backend with `./scripts/stage-current-backend.sh`.
 
 ## Development
 
@@ -285,8 +284,8 @@ npm run package:vsix
 
 ## Troubleshooting
 
-- Board is not detected: check board power, USB data cable, permissions, and `canmv.serialPath`.
-- Backend executable is missing: build/stage the backend or set `canmv.backendPath`.
+- Board is not detected: check board power, USB data cable, and serial permissions.
+- Backend executable is missing: install a platform-specific extension package or build and stage the backend.
 - Script output is missing: open the `CanMV Terminal` panel and the `CanMV` Output channel.
 - Preview is empty: make sure the running script publishes IDE framebuffer data.
 - Preview stops updating: disable and re-enable Preview, or stop and restart the script.

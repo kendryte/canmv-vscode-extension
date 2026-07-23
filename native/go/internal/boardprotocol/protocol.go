@@ -19,13 +19,19 @@ type Handler interface {
 	DisableFramebuffer(board *usbdbg.Board)
 	SoftReset(board *usbdbg.Board) error
 	ScriptStop(board *usbdbg.Board) error
+	// ScriptRunning reports the lifecycle of an IDE-launched script. It must
+	// become false when that script exits so the host can update its UI.
 	ScriptRunning(board *usbdbg.Board, fallback bool) (bool, error)
+	// ScriptBusy additionally includes a pending soft reset or a REPL command.
+	// Use it for generic device-busy checks; ScriptRunning is lifecycle-only.
+	ScriptBusy(board *usbdbg.Board, fallback bool) (bool, error)
 	DrainTxBuf(board *usbdbg.Board) ([]byte, error)
 	TerminalInput(board *usbdbg.Board, text string) error
 	FileExec(board *usbdbg.Board, path string) error
 	VirtualTouchStatus(board *usbdbg.Board) (usbdbg.VirtualTouchStatus, error)
 	VirtualTouchEvent(board *usbdbg.Board, event usbdbg.VirtualTouchEvent) error
 	ListDir(board *usbdbg.Board, path string) ([]usbdbg.FileEntry, error)
+	ListDirPage(board *usbdbg.Board, path string, offset uint32) (usbdbg.DirPage, error)
 	QueryFileStat(board *usbdbg.Board, path string) (usbdbg.FileStat, error)
 	ReadFileChunk(board *usbdbg.Board, path string, offset uint32, size uint32) ([]byte, error)
 	ReadFileAll(board *usbdbg.Board, path string, chunkSize uint32) ([]byte, error)

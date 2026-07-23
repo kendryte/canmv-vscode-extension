@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"regexp"
@@ -41,6 +42,9 @@ const (
 	previewNoFrameRetryLimit   = 8
 	previewWindowsTimerGuard   = 6 * time.Millisecond
 	scriptOutputEventChunkSize = 32 * 1024
+	// Require a second idle sample before publishing completion so a transient
+	// serial read cannot immediately clear the script UI.
+	scriptStoppedConfirmations = 2
 )
 
 func main() {
@@ -103,16 +107,9 @@ func (s *server) installShutdownHandlers(done <-chan struct{}, parentPID int) {
 	go func() {
 		select {
 		case <-signals:
-			finished := make(chan struct{})
-			go func() {
-				s.cleanupBoard()
-				close(finished)
-			}()
-			select {
-			case <-finished:
-			case <-time.After(2500 * time.Millisecond):
-				_, _ = os.Stderr.WriteString("[canmv-backend] forced shutdown after cleanup timeout\n")
-			}
+			// A request can be blocked in a long serial read. Close the port before
+			// exiting so the read wakes up instead of leaving the device mid-command.
+			s.abortBoard()
 			os.Exit(0)
 		case <-done:
 			signal.Stop(signals)
@@ -132,7 +129,7 @@ func (s *server) installShutdownHandlers(done <-chan struct{}, parentPID int) {
 			case <-ticker.C:
 				if os.Getppid() != parentPID {
 					_, _ = os.Stderr.WriteString("[canmv-backend] parent process changed; shutting down\n")
-					s.cleanupBoard()
+					s.abortBoard()
 					os.Exit(0)
 				}
 			}
@@ -277,7 +274,10 @@ func (s *server) scriptRunningStatus() (interface{}, int, string) {
 	if board == nil {
 		return map[string]bool{"running": false}, 0, ""
 	}
-	running, err := s.scriptRunning(board, false)
+	// The public status endpoint answers whether Python is busy at all. The
+	// poller keeps using the narrower IDE-script lifecycle signal so it can
+	// publish an accurate finished event for IDE-launched scripts.
+	running, err := s.scriptBusy(board, false)
 	if err != nil {
 		return nil, 2003, err.Error()
 	}
@@ -305,7 +305,7 @@ func (s *server) runScript(params map[string]interface{}) (interface{}, int, str
 	// Pre-flight health check: verify the board is responsive before
 	// attempting a soft reset. Avoids pushing an already-degraded board
 	// further into a bad state during rapid start/stop cycles.
-	if _, err := s.scriptRunning(board, false); err != nil {
+	if _, err := s.scriptBusy(board, false); err != nil {
 		s.startPoller(false)
 		return map[string]string{"status": "error", "message": "Board communication error; try again shortly", "output": err.Error()}, 0, ""
 	}
@@ -314,7 +314,7 @@ func (s *server) runScript(params map[string]interface{}) (interface{}, int, str
 	if !s.isCurrentBoard(board) {
 		return map[string]string{"status": "error", "message": "Board disconnected", "output": "Board disconnected"}, 0, ""
 	}
-	running, err := s.scriptRunning(board, false)
+	running, err := s.scriptBusy(board, false)
 	if err != nil {
 		running = false
 	}
@@ -459,7 +459,7 @@ func (s *server) fileExec(params map[string]interface{}) (interface{}, int, stri
 		return map[string]string{"status": "error", "message": "Board disconnected"}, 0, ""
 	}
 	// Pre-flight health check before soft reset.
-	if _, err := s.scriptRunning(board, false); err != nil {
+	if _, err := s.scriptBusy(board, false); err != nil {
 		s.startPoller(false)
 		return map[string]string{"status": "error", "message": "Board communication error; try again shortly", "output": err.Error()}, 0, ""
 	}
@@ -468,7 +468,7 @@ func (s *server) fileExec(params map[string]interface{}) (interface{}, int, stri
 	if !s.isCurrentBoard(board) {
 		return map[string]string{"status": "error", "message": "Board disconnected"}, 0, ""
 	}
-	running, err := s.scriptRunning(board, false)
+	running, err := s.scriptBusy(board, false)
 	if err != nil {
 		running = false
 	}
@@ -494,7 +494,7 @@ func (s *server) startPreview(params map[string]interface{}) (interface{}, int, 
 		return map[string]string{"status": "error", "message": "Board not connected"}, 0, ""
 	}
 	if s.currentProtocol().CheckRunningBeforePreview() {
-		running, err := s.scriptRunning(board, true)
+		running, err := s.scriptBusy(board, true)
 		if err == nil && !running {
 			s.opMu.Unlock()
 			s.stopPreview()
@@ -533,7 +533,23 @@ func (s *server) listDir(params map[string]interface{}) (interface{}, int, strin
 	if !s.hasCapability(usbdbg.CapListDir) {
 		return nil, 4008, "File explorer is not supported by this firmware"
 	}
-	entries, err := s.currentProtocol().ListDir(board, stringParam(params, "path", "/"))
+	path := stringParam(params, "path", "/")
+	offset := uint32Param(params, "offset", 0)
+	if s.hasCapability(usbdbg.CapListDirPaged) {
+		page, err := s.currentProtocol().ListDirPage(board, path, offset)
+		if err != nil {
+			return nil, 4003, err.Error()
+		}
+		result := map[string]interface{}{"entries": page.Entries}
+		if !page.Done {
+			result["nextOffset"] = page.NextOffset
+		}
+		return result, 0, ""
+	}
+	if offset != 0 {
+		return nil, 4003, "paged directory listing is not supported by this firmware"
+	}
+	entries, err := s.currentProtocol().ListDir(board, path)
 	if err != nil {
 		return nil, 4003, err.Error()
 	}
@@ -969,7 +985,7 @@ func (s *server) startPoller(assumeRunning bool) {
 						wasRunning = true
 					} else if wasRunning {
 						notRunningCount++
-						if notRunningCount >= 8 {
+						if notRunningCount >= scriptStoppedConfirmations {
 							s.stableDrain(stop, board, operationSeq)
 							_ = s.conn.Event("scriptState", map[string]string{"state": "finished"})
 							wasRunning = false
@@ -1073,6 +1089,22 @@ func (s *server) cleanupBoard() {
 	s.boardMu.Unlock()
 }
 
+// abortBoard is used from shutdown paths that may race an in-flight command.
+// Closing the serial port wakes a blocked read without waiting for opMu.
+func (s *server) abortBoard() {
+	s.boardMu.Lock()
+	s.operationSeq++
+	board := s.board
+	s.board = nil
+	s.closing = true
+	s.clearBoardMetadataLocked()
+	s.boardMu.Unlock()
+
+	if board != nil {
+		_ = board.Close()
+	}
+}
+
 func (s *server) scheduleConnectSoftReset(board *usbdbg.Board, operationSeq uint64) {
 	go func() {
 		s.opMu.Lock()
@@ -1091,7 +1123,7 @@ func (s *server) scheduleConnectSoftReset(board *usbdbg.Board, operationSeq uint
 			return
 		}
 		for attempt := 0; attempt < 2; attempt++ {
-			running, err := s.scriptRunning(board, false)
+			running, err := s.scriptBusy(board, false)
 			if err == nil && !running {
 				break
 			}
@@ -1252,6 +1284,10 @@ func (s *server) scriptRunning(board *usbdbg.Board, legacyFallback bool) (bool, 
 	return s.currentProtocol().ScriptRunning(board, legacyFallback)
 }
 
+func (s *server) scriptBusy(board *usbdbg.Board, legacyFallback bool) (bool, error) {
+	return s.currentProtocol().ScriptBusy(board, legacyFallback)
+}
+
 func (s *server) cachedVirtualTouchStatus() usbdbg.VirtualTouchStatus {
 	s.boardMu.Lock()
 	defer s.boardMu.Unlock()
@@ -1321,7 +1357,7 @@ func (s *server) stopScriptAndDrain(board *usbdbg.Board, timeout time.Duration, 
 				out = append(out, data...)
 			}
 		}
-		running, err := s.scriptRunning(board, false)
+		running, err := s.scriptBusy(board, false)
 		if err == nil && !running {
 			break
 		}
@@ -1427,11 +1463,22 @@ func intParam(params map[string]interface{}, key string, fallback int) int {
 }
 
 func uint32Param(params map[string]interface{}, key string, fallback uint32) uint32 {
-	value := intParam(params, key, int(fallback))
-	if value < 0 {
+	switch value := params[key].(type) {
+	case float64:
+		if math.IsNaN(value) || math.IsInf(value, 0) || math.Trunc(value) != value || value < 0 || value > float64(^uint32(0)) {
+			return fallback
+		}
+		return uint32(value)
+	case int:
+		if value < 0 || uint64(value) > uint64(^uint32(0)) {
+			return fallback
+		}
+		return uint32(value)
+	case uint32:
+		return value
+	default:
 		return fallback
 	}
-	return uint32(value)
 }
 
 func virtualTouchStatusResult(status usbdbg.VirtualTouchStatus) map[string]interface{} {

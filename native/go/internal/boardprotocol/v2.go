@@ -31,6 +31,13 @@ func (p *protocolV2) ScriptStop(board *usbdbg.Board) error {
 }
 
 func (p *protocolV2) ScriptRunning(board *usbdbg.Board, fallback bool) (bool, error) {
+	// SCRIPT_STATUS also stays true during a pending soft reset or a REPL
+	// command. The extension needs the narrower IDE-script lifecycle signal to
+	// reliably emit scriptState=finished after a short script exits.
+	return board.ScriptRunning()
+}
+
+func (p *protocolV2) ScriptBusy(board *usbdbg.Board, fallback bool) (bool, error) {
 	return board.ScriptStatus()
 }
 
@@ -56,6 +63,13 @@ func (p *protocolV2) VirtualTouchEvent(board *usbdbg.Board, event usbdbg.Virtual
 
 func (p *protocolV2) ListDir(board *usbdbg.Board, path string) ([]usbdbg.FileEntry, error) {
 	return board.ListDir(path)
+}
+
+func (p *protocolV2) ListDirPage(board *usbdbg.Board, path string, offset uint32) (usbdbg.DirPage, error) {
+	if !p.HasCapability(usbdbg.CapListDirPaged) {
+		return usbdbg.DirPage{}, unsupportedError("paged directory listing")
+	}
+	return board.ListDirPage(path, offset)
 }
 
 func (p *protocolV2) QueryFileStat(board *usbdbg.Board, path string) (usbdbg.FileStat, error) {

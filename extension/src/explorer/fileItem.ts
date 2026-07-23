@@ -23,6 +23,10 @@ export class FileTreeItem extends vscode.TreeItem {
         : vscode.TreeItemCollapsibleState.None
     );
 
+    if (absPath) {
+      this.id = absPath;
+    }
+
     this.iconPath = new vscode.ThemeIcon(
       fileType === 'directory' ? 'folder' : fileType === 'message' ? 'warning' : 'file'
     );
@@ -40,6 +44,12 @@ export class FileTreeItem extends vscode.TreeItem {
       this.contextValue = fileType === 'message'
         ? 'message'
         : isMountRoot(absPath) ? 'mountRoot' : 'directory';
+    }
+  }
+
+  setLoading(loading: boolean): void {
+    if (this.fileType === 'directory') {
+      this.iconPath = new vscode.ThemeIcon(loading ? 'sync~spin' : 'folder');
     }
   }
 }

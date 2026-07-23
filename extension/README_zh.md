@@ -11,7 +11,7 @@ CanMV for Visual Studio Code 扩展将 CanMV K230 开发板集成到 Visual Stud
 ## 功能特性
 
 - 通过 CanMV 活动栏或命令面板连接和断开 CanMV K230 开发板。
-- 通过 USB VID/PID `1209:abd1` 自动检测支持的开发板，并可在需要时手动指定串口路径。
+- 通过 USB VID/PID `1209:abd1` 自动检测支持的开发板。
 - 通过后端能力协商支持传统版和 v2 版板级协议。
 - 在开发板上运行当前 Python 文件、停止正在运行的脚本，或直接从设备树运行 Python 文件。
 - 预览实时 IDE 帧缓冲图像，支持适应/原始尺寸模式、旋转、PNG 截图、像素 RGB 拾取、ROI 直方图采样、视频录制、FPS 显示，以及 RGB/灰度/LAB/YUV 直方图和悬停数值读取。
@@ -19,7 +19,7 @@ CanMV for Visual Studio Code 扩展将 CanMV K230 开发板集成到 Visual Stud
 - 当连接的固件支持虚拟触控时，从预览窗口发送虚拟触控点击。
 - 浏览已挂载的设备存储，包括 `/sdcard`、`/data` 和 `/udisk`。
 - 创建、重命名、删除、上传、下载、打开、编辑和自动同步远程文件。
-- 将当前编辑器内容直接保存为 `/sdcard/main.py` 或 `/sdcard/boot.py`。
+- 将当前编辑器内容直接保存为 `/sdcard/main.py` 或 `/sdcard/boot.py`，上传前可选择压缩。
 - 使用 CanMV 终端面板查看开发板输出、REPL 输入、Ctrl-C 脚本中断、日志清除和日志导出。
 - 浏览已下载的 CanMV 官方示例，以可编辑的未保存缓冲区打开示例，在磁盘中显示示例位置，并在开发板上运行 Python 示例。
 - 为兼容的 VS Code AI 客户端提供 CanMV MCP 服务器，包括开发板检测、连接、脚本、终端、远程文件系统、示例和 stubs 工具。
@@ -60,7 +60,7 @@ CanMV for Visual Studio Code 扩展将 CanMV K230 开发板集成到 Visual Stud
 
 在激活时，扩展会解析 `firmware/latest` 并使用该固件清单选择默认的 stubs 和示例。开发板连接后，扩展会解析 `firmware/<完整commit-hash>/manifest.json` 并切换到与连接固件匹配的资源。如果找不到精确匹配的清单，扩展将回退到最新的清单，然后回退到可用的本地缓存。
 
-如果自动检测未找到开发板，可将 `canmv.serialPath` 设置为串口设备路径，例如 `/dev/ttyACM0`。当设置了 `canmv.serialPath` 时，将使用 `canmv.baudRate` 进行连接。
+扩展始终自动检测受支持的 USB 开发板。检测到多个开发板时，可在设备选择器中选择目标开发板。
 
 ### 运行脚本
 
@@ -120,6 +120,8 @@ CanMV for Visual Studio Code 扩展将 CanMV K230 开发板集成到 Visual Stud
 - `CanMV: Save as main.py` 将当前编辑器内容写入 `/sdcard/main.py`。
 - `CanMV: Save as boot.py` 将当前编辑器内容写入 `/sdcard/boot.py`。
 
+启用 `canmv.autoMinifyStartupScripts`（默认启用）时，保存启动文件会在上传前压缩源码：移除 `#` 注释、独立的三引号注释块、空行和行尾空白。作为值使用的字符串会保持不变，当前编辑器内容不会改变。禁用此设置可原样上传源码。
+
 ### 使用终端
 
 CanMV 终端面板保留最近的滚动历史，同步显示开发板/脚本输出，并在开发板已连接且无脚本运行时接受 REPL 输入。脚本运行期间终端输入被禁用，但 Ctrl-C 除外（用于请求停止脚本）。终端 webview 还支持清除输出和保存日志。
@@ -128,7 +130,7 @@ CanMV 终端面板保留最近的滚动历史，同步显示开发板/脚本输�
 
 该扩展向 VS Code 提供了一个 `CanMV MCP Server` 定义。兼容的 MCP 客户端可以发现用于能力分析、开发板检测/连接、脚本执行、预览帧、虚拟触控、终端输入/输出、远程文件系统操作、主机端文件保存以及对缓存的 CanMV 示例和 MicroPython stubs 的只读访问等工具。
 
-MCP 服务器作为独立的 stdio Node 进程运行，使用与扩展相同的捆绑后端。它通过扩展传递的环境变量来遵循 `canmv.backendPath`、`canmv.serialPath` 和 `canmv.baudRate` 设置。示例和 stubs 工具读取 `~/.kendryte/k230_canmv_examples` 和 `~/.kendryte/k230_canmv_stubs` 下的本地缓存，因此如果这些缓存为空，请先刷新或连接一次。
+MCP 服务器作为独立的 stdio Node 进程运行，始终使用扩展内置的后端。它从扩展接收 `canmv.baudRate` 设置；MCP 客户端也可以向 `canmv_connect_board` 传入明确的串口路径。示例和 stubs 工具读取 `~/.kendryte/k230_canmv_examples` 和 `~/.kendryte/k230_canmv_stubs` 下的本地缓存，因此如果这些缓存为空，请先刷新或连接一次。
 
 面向开发板的 MCP 工具在需要硬件访问时会自动连接，并为相关的后续调用（如运行脚本、启动预览和读取帧）保持开发板会话。服务器在调用 `canmv_disconnect_board`、MCP 客户端退出或空闲超时后断开连接。设置 `CANMV_MCP_IDLE_DISCONNECT_MS` 可调整超时时间，默认为 120000 毫秒。
 
@@ -186,13 +188,10 @@ MCP 功能包括：
 
 | 设置 | 默认值 | 描述 |
 | --- | --- | --- |
-| `canmv.serialPath` | `""` | 串口设备路径。留空则通过 USB VID/PID `1209:abd1` 自动检测支持的 CanMV 开发板。 |
-| `canmv.baudRate` | `12000000` | 手动设置 `canmv.serialPath` 时使用的串口波特率。 |
-| `canmv.backendPath` | `""` | 自定义 `canmv-backend` 可执行文件的路径。留空则使用内置后端。 |
+| `canmv.baudRate` | `12000000` | 连接自动检测到的开发板时使用的串口波特率。 |
 | `canmv.autoReconnect` | `true` | 意外断开后自动重新连接。 |
+| `canmv.autoMinifyStartupScripts` | `true` | 上传前压缩 `/sdcard/main.py` 和 `/sdcard/boot.py`。 |
 | `canmv.stubsAutoDownload` | `true` | 需要时自动下载 K230 MicroPython stubs 和示例。 |
-
-后端路径也可以通过 `CANMV_BACKEND_PATH` 环境变量覆盖。
 
 ## 固件资源、示例和 Python Stubs
 
@@ -252,7 +251,7 @@ extension/bin/<platform>/canmv-backend.exe
 - `darwin-x64`
 - `darwin-arm64`
 
-如需本地调试，可从 `native/go` 构建后端，并将 `canmv.backendPath` 或 `CANMV_BACKEND_PATH` 设置为生成的可执行文件。
+如需本地排查，可通过 `./scripts/stage-current-backend.sh` 重新构建并部署当前平台的后端。
 
 ## 开发
 
@@ -285,8 +284,8 @@ npm run package:vsix
 
 ## 常见问题排查
 
-- 开发板未被检测到：检查开发板电源、USB 数据线、权限以及 `canmv.serialPath` 设置。
-- 后端可执行文件缺失：构建/部署后端或设置 `canmv.backendPath`。
+- 开发板未被检测到：检查开发板电源、USB 数据线和串口权限。
+- 后端可执行文件缺失：安装对应平台的扩展包，或构建并部署后端。
 - 脚本输出缺失：打开 `CanMV Terminal` 面板和 `CanMV` 输出通道。
 - 预览画面为空：确保运行中的脚本发布了 IDE 帧缓冲数据。
 - 预览停止更新：禁用并重新启用预览，或停止并重新启动脚本。

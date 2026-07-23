@@ -79,7 +79,7 @@ export const Methods = {
     result: {} as unknown as void,
     errors: {},
   },
-  /** Query the board's USBDBG_SCRIPT_RUNNING state. */
+  /** Query whether the board is busy running Python or completing a soft reset. */
   scriptRunning: {
     method: 'scriptRunning' as const,
     params: {} as Record<string, never>,
@@ -147,8 +147,11 @@ export const Methods = {
   /** List directory contents on the board. */
   ioListDir: {
     method: 'io.listDir' as const,
-    params: {} as { path: string },
-    result: {} as { entries: { name: string; type: 'file' | 'directory'; size: number; mtime?: number }[] },
+    params: {} as { path: string; offset?: number },
+    result: {} as {
+      entries: { name: string; type: 'file' | 'directory'; size: number; mtime?: number }[];
+      nextOffset?: number;
+    },
     errors: { 4001: 'Path not found', 4002: 'Not a directory', 4008: 'File explorer unsupported' },
   },
   /** Query file metadata on the board. */

@@ -64,7 +64,8 @@ const (
 	CapFileExec     = 1 << 7
 	CapVirtualTouch = 1 << 8
 	CapReplInput    = 1 << 9
-	CapKnownMask    = CapListDir | CapReadFile | CapWriteFile | CapDeleteFile | CapRenameFile | CapMkdir | CapRmdir | CapFileExec | CapVirtualTouch | CapReplInput
+	CapListDirPaged = 1 << 10
+	CapKnownMask    = CapListDir | CapReadFile | CapWriteFile | CapDeleteFile | CapRenameFile | CapMkdir | CapRmdir | CapFileExec | CapVirtualTouch | CapReplInput | CapListDirPaged
 
 	capProtocolVersion = 2
 
@@ -76,11 +77,21 @@ const (
 	// syncMaxDiscard bounds how many stale bytes Sync will skip before giving up.
 	syncMaxDiscard = 512 * 1024
 
-	maxDirPayload   = 8 * 1024 * 1024
-	maxFileChunk    = 128 * 1024
-	maxFramePayload = 50 * 1024 * 1024
-	maxTxBufPayload = 128 * 1024
-	maxLegacyTxBuf  = 128 * 1024
+	// Keep compatibility with legacy firmware's monolithic LIST_DIR reply.
+	// Firmware advertising CapListDirPaged uses maxDirPagePayload instead.
+	maxLegacyDirPayload = 8 * 1024 * 1024
+	maxDirPagePayload   = 8 * 1024
+	maxFileChunk        = 128 * 1024
+	maxFramePayload     = 50 * 1024 * 1024
+	maxTxBufPayload     = 128 * 1024
+	maxLegacyTxBuf      = 128 * 1024
+	listDirReadTimeout  = 30 * time.Second
+
+	// A paging request is sent through CmdListDir using a reserved path prefix.
+	// CapListDirPaged gates it so older firmware continues using the legacy
+	// request form.
+	listDirPageRequestPrefix = "/\x1fl/"
+	listDirPageDone          = ^uint32(0)
 )
 
 var responseLen = map[byte]uint32{
@@ -100,6 +111,13 @@ type FileEntry struct {
 	Type  string `json:"type"`
 	Size  uint32 `json:"size"`
 	MTime uint32 `json:"mtime,omitempty"`
+}
+
+// DirPage is one bounded page from the paged LIST_DIR protocol.
+type DirPage struct {
+	Entries    []FileEntry
+	NextOffset uint32
+	Done       bool
 }
 
 type FileStat struct {
@@ -423,7 +441,10 @@ func (b *Board) Capabilities() (uint32, uint32, error) {
 		return 0, 0, fmt.Errorf("unsupported capabilities protocol version: %d", version)
 	}
 	if flags&^CapKnownMask != 0 {
-		return 0, 0, fmt.Errorf("unknown capabilities flags: 0x%x", flags&^CapKnownMask)
+		// Capability bits are independently optional. Ignore newer bits while
+		// retaining the known subset so firmware can add an extension without
+		// disabling unrelated features on this host.
+		flags &= CapKnownMask
 	}
 	return version, flags, nil
 }
@@ -482,49 +503,21 @@ func (b *Board) QueryFileStat(path string) (FileStat, error) {
 }
 
 func (b *Board) ListDir(path string) ([]FileEntry, error) {
-	data, err := b.listDirResponse(path)
-	if err != nil {
-		return nil, err
-	}
-	if len(data) < 12 {
-		return []FileEntry{}, nil
-	}
-	errCode := binary.LittleEndian.Uint32(data[0:4])
-	payloadLen := int(binary.LittleEndian.Uint32(data[4:8]))
-	count := int(binary.LittleEndian.Uint32(data[8:12]))
-	if errCode != 0 && errCode != 1024 || payloadLen <= 0 || len(data) < 12+payloadLen {
-		return []FileEntry{}, nil
-	}
-	payload := data[12 : 12+payloadLen]
-	entries := make([]FileEntry, 0, count)
-	offset := 0
-	for i := 0; i < count; i++ {
-		if offset+10 > len(payload) {
-			break
-		}
-		etype := payload[offset]
-		offset++
-		nameLen := int(payload[offset])
-		offset++
-		size := binary.LittleEndian.Uint32(payload[offset : offset+4])
-		mtime := binary.LittleEndian.Uint32(payload[offset+4 : offset+8])
-		offset += 8
-		if offset+nameLen > len(payload) {
-			break
-		}
-		fileType := "file"
-		if etype == 1 {
-			fileType = "directory"
-		}
-		entries = append(entries, FileEntry{
-			Name:  string(payload[offset : offset+nameLen]),
-			Type:  fileType,
-			Size:  size,
-			MTime: mtime,
-		})
-		offset += nameLen
-	}
-	return entries, nil
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_ = b.port.SetReadTimeout(listDirReadTimeout)
+	defer b.port.SetReadTimeout(1 * time.Second)
+	return b.listDirLegacyLocked(path)
+}
+
+// ListDirPage sends one bounded page request. Callers must only use this when
+// the negotiated capabilities include CapListDirPaged.
+func (b *Board) ListDirPage(path string, offset uint32) (DirPage, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_ = b.port.SetReadTimeout(listDirReadTimeout)
+	defer b.port.SetReadTimeout(1 * time.Second)
+	return b.listDirPageLocked(path, offset)
 }
 
 func (b *Board) ReadFileAll(path string, chunkSize uint32) ([]byte, error) {
@@ -773,29 +766,132 @@ func (b *Board) CommandReadWithIdle(opcode byte, responseField uint32, payload [
 	return readWithIdle(b.port, int(maxLen))
 }
 
-func (b *Board) listDirResponse(path string) ([]byte, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+func (b *Board) listDirPageLocked(path string, offset uint32) (DirPage, error) {
+	request := []byte(fmt.Sprintf("%s%d/%d/%s", listDirPageRequestPrefix, offset, maxDirPagePayload, path))
+	request = append(request, 0)
+	if err := b.writeCommandLocked(CmdListDir, uint32(len(request)), request); err != nil {
+		return DirPage{}, err
+	}
+
+	header := make([]byte, 12)
+	if err := readExact(b.port, header); err != nil {
+		return DirPage{}, err
+	}
+	errCode := binary.LittleEndian.Uint32(header[0:4])
+	payloadLen := binary.LittleEndian.Uint32(header[4:8])
+	count := binary.LittleEndian.Uint32(header[8:12])
+	if payloadLen == 0 {
+		return DirPage{}, fmt.Errorf("list dir paging is not supported by this firmware")
+	}
+	if payloadLen > maxDirPagePayload {
+		if err := discardExact(b.port, payloadLen); err != nil {
+			return DirPage{}, fmt.Errorf("list dir page payload too large: %d (discard failed: %w)", payloadLen, err)
+		}
+		return DirPage{}, fmt.Errorf("list dir page payload too large: %d", payloadLen)
+	}
+	payload := make([]byte, payloadLen)
+	if err := readExact(b.port, payload); err != nil {
+		return DirPage{}, err
+	}
+	if len(payload) < 4 {
+		return DirPage{}, fmt.Errorf("short list dir page continuation: got %d bytes", len(payload))
+	}
+	if errCode != 0 && errCode != 1024 {
+		return DirPage{}, fmt.Errorf("list dir page failed with code %d", errCode)
+	}
+	entries, err := parseListDirEntries(payload[4:], count)
+	if err != nil {
+		return DirPage{}, err
+	}
+	nextOffset := binary.LittleEndian.Uint32(payload[:4])
+	if nextOffset != listDirPageDone && nextOffset <= offset {
+		return DirPage{}, fmt.Errorf("list dir page did not advance: offset %d, next %d", offset, nextOffset)
+	}
+	return DirPage{
+		Entries:    entries,
+		NextOffset: nextOffset,
+		Done:       nextOffset == listDirPageDone,
+	}, nil
+}
+
+func (b *Board) listDirLegacyLocked(path string) ([]FileEntry, error) {
 	request := nulString(path)
 	if err := b.writeCommandLocked(CmdListDir, uint32(len(request)), request); err != nil {
 		return nil, err
 	}
+
 	header := make([]byte, 12)
 	if err := readExact(b.port, header); err != nil {
 		return nil, err
 	}
+	errCode := binary.LittleEndian.Uint32(header[0:4])
 	payloadLen := binary.LittleEndian.Uint32(header[4:8])
-	if payloadLen == 0 {
-		return header, nil
+	count := binary.LittleEndian.Uint32(header[8:12])
+	if errCode != 0 && errCode != 1024 {
+		if payloadLen > 0 {
+			if err := discardExact(b.port, payloadLen); err != nil {
+				return nil, fmt.Errorf("legacy list dir error payload discard failed: %w", err)
+			}
+		}
+		return []FileEntry{}, nil
 	}
-	if payloadLen > maxDirPayload {
-		return nil, fmt.Errorf("list dir payload too large: %d", payloadLen)
+	if payloadLen == 0 {
+		return []FileEntry{}, nil
+	}
+	if payloadLen > maxLegacyDirPayload {
+		if err := discardExact(b.port, payloadLen); err != nil {
+			return nil, fmt.Errorf("legacy list dir payload too large: %d (discard failed: %w)", payloadLen, err)
+		}
+		return nil, fmt.Errorf("legacy list dir payload too large: %d", payloadLen)
 	}
 	payload := make([]byte, payloadLen)
 	if err := readExact(b.port, payload); err != nil {
 		return nil, err
 	}
-	return append(header, payload...), nil
+	entries, err := parseListDirEntries(payload, count)
+	if err != nil {
+		// Match the legacy parser's behavior: retain complete records before a
+		// malformed trailing record instead of failing the entire listing.
+		return entries, nil
+	}
+	return entries, nil
+}
+
+func parseListDirEntries(payload []byte, count uint32) ([]FileEntry, error) {
+	if count > uint32(len(payload)/10) {
+		return nil, fmt.Errorf("invalid list dir entry count %d for %d bytes", count, len(payload))
+	}
+
+	entries := make([]FileEntry, 0, int(count))
+	offset := 0
+	for i := uint32(0); i < count; i++ {
+		if offset+10 > len(payload) {
+			return entries, fmt.Errorf("short list dir entry header at offset %d", offset)
+		}
+		etype := payload[offset]
+		nameLen := int(payload[offset+1])
+		size := binary.LittleEndian.Uint32(payload[offset+2 : offset+6])
+		mtime := binary.LittleEndian.Uint32(payload[offset+6 : offset+10])
+		offset += 10
+		if offset+nameLen > len(payload) {
+			return entries, fmt.Errorf("short list dir entry name at offset %d", offset)
+		}
+		fileType := "file"
+		if etype == 1 {
+			fileType = "directory"
+		}
+		entries = append(entries, FileEntry{
+			Name:  string(payload[offset : offset+nameLen]),
+			Type:  fileType,
+			Size:  size,
+			MTime: mtime,
+		})
+		offset += nameLen
+	}
+	if offset != len(payload) {
+		return entries, fmt.Errorf("unexpected trailing list dir bytes: %d", len(payload)-offset)
+	}
+	return entries, nil
 }
 
 func (b *Board) readFileResponse(payload []byte) ([]byte, error) {
@@ -813,6 +909,9 @@ func (b *Board) readFileResponse(payload []byte) ([]byte, error) {
 		return header, nil
 	}
 	if dataLen > maxFileChunk {
+		if err := discardExact(b.port, dataLen); err != nil {
+			return nil, fmt.Errorf("read file payload too large: %d (discard failed: %w)", dataLen, err)
+		}
 		return nil, fmt.Errorf("read file payload too large: %d", dataLen)
 	}
 	data := make([]byte, dataLen)
@@ -864,6 +963,24 @@ func readExact(port serial.Port, data []byte) error {
 			return fmt.Errorf("short read: got %d of %d bytes", offset, len(data))
 		}
 		offset += n
+	}
+	return nil
+}
+
+// discardExact preserves command framing after rejecting a response that is
+// larger than its negotiated bound without allocating that whole response.
+func discardExact(port serial.Port, length uint32) error {
+	const scratchSize = 32 * 1024
+	buf := make([]byte, scratchSize)
+	for length > 0 {
+		chunkLen := len(buf)
+		if length < uint32(chunkLen) {
+			chunkLen = int(length)
+		}
+		if err := readExact(port, buf[:chunkLen]); err != nil {
+			return err
+		}
+		length -= uint32(chunkLen)
 	}
 	return nil
 }

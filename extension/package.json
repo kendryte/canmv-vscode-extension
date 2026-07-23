@@ -412,25 +412,20 @@
     "configuration": {
       "title": "%canmv.configuration.title%",
       "properties": {
-        "canmv.serialPath": {
-          "type": "string",
-          "default": "",
-          "description": "%canmv.configuration.serialPath.description%"
-        },
         "canmv.baudRate": {
           "type": "number",
           "default": 12000000,
           "description": "%canmv.configuration.baudRate.description%"
         },
-        "canmv.backendPath": {
-          "type": "string",
-          "default": "",
-          "description": "%canmv.configuration.backendPath.description%"
-        },
         "canmv.autoReconnect": {
           "type": "boolean",
           "default": true,
           "description": "%canmv.configuration.autoReconnect.description%"
+        },
+        "canmv.autoMinifyStartupScripts": {
+          "type": "boolean",
+          "default": true,
+          "description": "%canmv.configuration.autoMinifyStartupScripts.description%"
         },
         "canmv.stubsAutoDownload": {
           "type": "boolean",

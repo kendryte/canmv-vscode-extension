@@ -6,6 +6,7 @@ import { JsonCodec, type WireMessage } from '../protocol/codec';
 import { FramedMessageReader, MAGIC, MSG_REQUEST } from '../protocol/framed_reader';
 import { Methods, createRequest, resetRequestId } from '../protocol/methods';
 import { type BackendMessage, type Event, type ProtocolError, type Request, type Response, isError, isEvent, isResponse } from '../protocol/types';
+import { minifyStartupScript } from '../service/startupScript';
 
 type JsonRpcId = string | number | null;
 type JsonRpcRequest = {
@@ -59,9 +60,11 @@ type FrameInfo = {
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'canmv-k230';
 const DEFAULT_BAUD_RATE = readNumberEnv('CANMV_BAUD_RATE', 12000000);
+const AUTO_MINIFY_STARTUP_SCRIPTS = readBooleanEnv('CANMV_AUTO_MINIFY_STARTUP_SCRIPTS', true);
 const REQUEST_TIMEOUT_MS = 15000;
 const REMOTE_FILE_CHUNK_SIZE = 128 * 1024;
 const REMOTE_FILE_CHUNK_TIMEOUT_MS = 30_000;
+const MAX_DIRECTORY_LIST_PAGES = 100_000;
 const BOARD_READY_TIMEOUT_MS = 5000;
 const DEFAULT_READ_LIMIT = 64 * 1024;
 const MAX_READ_LIMIT = 256 * 1024;
@@ -193,7 +196,7 @@ class CanmvMcpServer {
       title: 'Connect CanMV Board',
       description: 'Connect to a CanMV board. If no port is provided, the first detected board is selected.',
       inputSchema: objectSchema({
-        port: { type: 'string', description: 'Serial device path, for example /dev/ttyACM0 or COM3.' },
+        port: { type: 'string', description: 'Optional serial device path, for example /dev/ttyACM0 or COM3.' },
         baudRate: { type: 'number', description: 'Serial baud rate. Defaults to the canmv.baudRate setting or 12000000.' },
       }),
       handler: async (args) => this.connectBoard(optionalString(args.port), optionalNumber(args.baudRate)),
@@ -387,7 +390,7 @@ class CanmvMcpServer {
       inputSchema: objectSchema({
         path: { type: 'string', description: 'Remote directory path. Defaults to /.' },
       }),
-      handler: async (args) => this.requestResult(Methods.ioListDir, { path: optionalString(args.path) || '/' }),
+      handler: async (args) => this.listRemoteDirectory(optionalString(args.path) || '/'),
     },
     {
       name: 'canmv_stat_file',
@@ -434,7 +437,7 @@ class CanmvMcpServer {
     {
       name: 'canmv_write_file',
       title: 'Write Remote File',
-      description: 'Overwrite a file on the connected board with UTF-8 text or base64 data. Before writing generated .py files, search/read relevant CanMV examples and stubs.',
+      description: 'Overwrite a file on the connected board with UTF-8 text or base64 data. Startup-script minification follows the canmv.autoMinifyStartupScripts setting. Before writing generated .py files, search/read relevant CanMV examples and stubs.',
       inputSchema: objectSchema({
         path: { type: 'string', description: 'Remote file path.' },
         content: { type: 'string', description: 'File content.' },
@@ -458,7 +461,7 @@ class CanmvMcpServer {
     {
       name: 'canmv_save_main_py',
       title: 'Save main.py',
-      description: 'Write MicroPython source to /sdcard/main.py on the connected board. Before saving generated code, search/read relevant CanMV examples and stubs.',
+      description: 'Write MicroPython source to /sdcard/main.py on the connected board. Startup-script minification follows the canmv.autoMinifyStartupScripts setting. Before saving generated code, search/read relevant CanMV examples and stubs.',
       inputSchema: objectSchema({
         script: { type: 'string', description: 'MicroPython source code.' },
       }, ['script']),
@@ -467,7 +470,7 @@ class CanmvMcpServer {
     {
       name: 'canmv_save_boot_py',
       title: 'Save boot.py',
-      description: 'Write MicroPython source to /sdcard/boot.py on the connected board. Before saving generated code, search/read relevant CanMV examples and stubs.',
+      description: 'Write MicroPython source to /sdcard/boot.py on the connected board. Startup-script minification follows the canmv.autoMinifyStartupScripts setting. Before saving generated code, search/read relevant CanMV examples and stubs.',
       inputSchema: objectSchema({
         script: { type: 'string', description: 'MicroPython source code.' },
       }, ['script']),
@@ -625,7 +628,7 @@ class CanmvMcpServer {
   }
 
   private async connectBoard(portArg?: string, baudRateArg?: number): Promise<unknown> {
-    let port = portArg || process.env.CANMV_SERIAL_PATH || '';
+    let port = portArg || '';
     const baudRate = baudRateArg || DEFAULT_BAUD_RATE;
     if (!port) {
       const detected = await this.requestResult(Methods.detectBoards, {}, { autoConnect: false }) as {
@@ -667,6 +670,30 @@ class CanmvMcpServer {
       throw new Error(`Unsupported encoding: ${encoding}`);
     }
     return { path: remotePath, encoding: 'utf8', content: data.toString('utf8'), size: data.byteLength };
+  }
+
+  private async listRemoteDirectory(remotePath: string): Promise<{ entries: unknown[] }> {
+    const entries: unknown[] = [];
+    let offset = 0;
+    for (let pageCount = 0; pageCount < MAX_DIRECTORY_LIST_PAGES; pageCount++) {
+      const page = await this.requestResult(
+        Methods.ioListDir,
+        { path: remotePath, offset },
+        { timeoutMs: REMOTE_FILE_CHUNK_TIMEOUT_MS },
+      ) as { entries?: unknown[]; nextOffset?: number };
+      if (!Array.isArray(page.entries)) {
+        throw new Error(`Invalid directory listing response for ${remotePath}`);
+      }
+      entries.push(...page.entries);
+      if (page.nextOffset === undefined) {
+        return { entries };
+      }
+      if (!Number.isSafeInteger(page.nextOffset) || page.nextOffset <= offset || page.nextOffset > 0xffff_ffff) {
+        throw new Error(`Invalid directory listing continuation for ${remotePath}`);
+      }
+      offset = page.nextOffset;
+    }
+    throw new Error(`Directory listing exceeded ${MAX_DIRECTORY_LIST_PAGES} pages: ${remotePath}`);
   }
 
   private async readRemoteFileBuffer(remotePath: string): Promise<Buffer> {
@@ -745,7 +772,8 @@ class CanmvMcpServer {
     } else {
       throw new Error(`Unsupported encoding: ${encoding}`);
     }
-    return this.requestResult(Methods.ioWriteFile, { path: remotePath, dataBase64: data.toString('base64') });
+    const writeData = minifyStartupScript(remotePath, data, AUTO_MINIFY_STARTUP_SCRIPTS);
+    return this.requestResult(Methods.ioWriteFile, { path: remotePath, dataBase64: Buffer.from(writeData).toString('base64') });
   }
 
   private async writeAndRunScript(args: Record<string, unknown>): Promise<unknown> {
@@ -1028,14 +1056,8 @@ class CanmvBackend {
   async close(): Promise<void> {
     const child = this.child;
     if (!child) return;
-    await this.requestGracefulDisconnect(child);
     this.child = undefined;
     this.isOpen = false;
-    try {
-      child.stdin?.end();
-    } catch {
-      // Ignore shutdown races.
-    }
     if (child.exitCode === null && child.signalCode === null) {
       child.kill('SIGTERM');
     }
@@ -1108,37 +1130,13 @@ class CanmvBackend {
     }
   }
 
-  private async requestGracefulDisconnect(child: cp.ChildProcess): Promise<void> {
-    if (!child.stdin?.writable || this.child !== child) {
-      return;
-    }
-    try {
-      const result = await withTimeout(
-        this.request(createRequest(Methods.disconnectBoard, {})),
-        2000,
-      );
-      if (isError(result)) {
-        logStderr(`Graceful disconnect skipped: ${result.error.message}`);
-      }
-    } catch {
-      logStderr('Graceful disconnect timed out');
-    }
-  }
 }
 
 function resolveBackendCommand(): { command: string; args: string[]; cwd: string } {
-  const override = process.env.CANMV_BACKEND_PATH || '';
-  if (override) {
-    if (!fs.existsSync(override)) {
-      throw new Error(`Configured CanMV backend executable not found: ${override}`);
-    }
-    return { command: override, args: [], cwd: path.dirname(override) };
-  }
-
   const extensionPath = process.env.CANMV_EXTENSION_PATH || path.resolve(__dirname, '..', '..');
   const command = path.join(extensionPath, 'bin', platformTarget(), executableName());
   if (!fs.existsSync(command)) {
-    throw new Error(`CanMV backend executable not found for ${platformTarget()}. Set canmv.backendPath or CANMV_BACKEND_PATH.`);
+    throw new Error(`CanMV backend executable not found for ${platformTarget()}. Install a platform-specific extension package.`);
   }
   return { command, args: [], cwd: path.dirname(command) };
 }
@@ -1723,28 +1721,19 @@ function readNumberEnv(name: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+function readBooleanEnv(name: string, fallback: boolean): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+  if (value === 'true' || value === '1') return true;
+  if (value === 'false' || value === '0') return false;
+  return fallback;
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('timeout')), timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
 }
 
 function logStderr(message: string): void {

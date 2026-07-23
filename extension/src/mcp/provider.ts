@@ -14,11 +14,7 @@ export function registerMcpSupport(context: vscode.ExtensionContext): void {
 
   const changed = new vscode.EventEmitter<void>();
   const configSubscription = vscode.workspace.onDidChangeConfiguration((event) => {
-    if (
-      event.affectsConfiguration('canmv.backendPath') ||
-      event.affectsConfiguration('canmv.serialPath') ||
-      event.affectsConfiguration('canmv.baudRate')
-    ) {
+    if (event.affectsConfiguration('canmv.baudRate') || event.affectsConfiguration('canmv.autoMinifyStartupScripts')) {
       changed.fire();
     }
   });
@@ -61,15 +57,13 @@ export function registerMcpSupport(context: vscode.ExtensionContext): void {
 function createMcpServerEnv(context: vscode.ExtensionContext): Record<string, string | number | null> {
   const config = vscode.workspace.getConfiguration('canmv');
   const pkg = context.extension.packageJSON as { version?: string };
-  const backendPath = process.env.CANMV_BACKEND_PATH || config.get<string>('backendPath', '');
-  const serialPath = config.get<string>('serialPath', '');
   const baudRate = config.get<number>('baudRate', 12000000);
+  const autoMinifyStartupScripts = config.get<boolean>('autoMinifyStartupScripts', true);
 
   return {
     CANMV_EXTENSION_PATH: context.extensionPath,
     CANMV_EXTENSION_VERSION: pkg.version || 'unknown',
-    CANMV_BACKEND_PATH: backendPath || null,
-    CANMV_SERIAL_PATH: serialPath || null,
     CANMV_BAUD_RATE: Number.isFinite(baudRate) ? baudRate : 12000000,
+    CANMV_AUTO_MINIFY_STARTUP_SCRIPTS: autoMinifyStartupScripts ? 'true' : 'false',
   };
 }

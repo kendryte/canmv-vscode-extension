@@ -44,6 +44,7 @@ func (p Profile) CapabilityMap() map[string]interface{} {
 	flags := p.flags
 	return map[string]interface{}{
 		"listDir":      flags&usbdbg.CapListDir != 0,
+		"listDirPaged": flags&usbdbg.CapListDirPaged != 0,
 		"readFile":     flags&usbdbg.CapReadFile != 0,
 		"writeFile":    flags&usbdbg.CapWriteFile != 0,
 		"deleteFile":   flags&usbdbg.CapDeleteFile != 0,

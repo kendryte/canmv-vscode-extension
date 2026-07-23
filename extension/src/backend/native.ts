@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import { BackendApi } from './api';
 import { Request, Response, ProtocolError, Event } from '../protocol/types';
 import { JsonCodec, WireMessage } from '../protocol/codec';
-import { Methods, createRequest, resetRequestId } from '../protocol/methods';
+import { resetRequestId } from '../protocol/methods';
 import { FramedMessageReader, MSG_REQUEST, MAGIC } from '../protocol/framed_reader';
 import { isResponse, isError, isEvent } from '../protocol/types';
 import { logDebug, logError, logInfo, logWarn } from '../output';
@@ -44,7 +44,7 @@ export class NativeBackend implements BackendApi {
     }),
   });
 
-  async open(_serialPath: string, _baudRate: number): Promise<void> {
+  async open(_path: string, _baudRate: number): Promise<void> {
     if (this._isOpen) return;
     if (this.process) {
       await this.close();
@@ -115,14 +115,14 @@ export class NativeBackend implements BackendApi {
     if (child) {
       logInfo('Backend', 'Stopping backend');
       this.closingProcess = child;
-      await this.requestBackendDisconnect(child);
-      child.stdin?.end();
-      const exited = await waitForExit(child, 1500);
-      if (!exited) {
-        logWarn('Backend', 'Backend did not exit after graceful disconnect; terminating');
+      this._isOpen = false;
+      this.reader.reset();
+      this.resolvePendingRequests('Not connected');
+      if (child.exitCode === null && child.signalCode === null) {
         signalChildProcess(child, 'SIGTERM');
         const terminated = await waitForExit(child, 1000);
         if (!terminated) {
+          logWarn('Backend', 'Backend did not exit after abort; killing');
           signalChildProcess(child, 'SIGKILL');
           await waitForExit(child, 500);
         }
@@ -136,10 +136,7 @@ export class NativeBackend implements BackendApi {
     }
     this._isOpen = false;
     this.reader.reset();
-    for (const [, pending] of this.pendingRequests) {
-      pending.resolve({ id: 0, error: { code: 1004, message: 'Not connected' } });
-    }
-    this.pendingRequests.clear();
+    this.resolvePendingRequests('Not connected');
   }
 
   disposeSync(): void {
@@ -181,7 +178,7 @@ export class NativeBackend implements BackendApi {
     return new Promise((resolve) => {
       const wire: WireMessage = this.codec.encodeRequest(req);
       this.pendingRequests.set(req.id, { method: req.method, startedAt: Date.now(), resolve });
-      if (!this.process?.stdin?.writable) {
+      if (!this._isOpen || !this.process?.stdin?.writable) {
         logError('Backend', `Cannot send ${req.method}: backend stdin is not writable`);
         resolve({ id: req.id, error: { code: 1004, message: 'Backend stdin not available' } });
         this.pendingRequests.delete(req.id);
@@ -198,7 +195,7 @@ export class NativeBackend implements BackendApi {
   }
 
   notify(req: Request<string>): void {
-    if (!this.process?.stdin?.writable) {
+    if (!this._isOpen || !this.process?.stdin?.writable) {
       logError('Backend', `Cannot send ${req.method}: backend stdin is not writable`);
       return;
     }
@@ -249,39 +246,13 @@ export class NativeBackend implements BackendApi {
     this.stderrRemainder = '';
   }
 
-  private async requestBackendDisconnect(child: cp.ChildProcess): Promise<void> {
-    if (!child.stdin?.writable || this.process !== child) {
-      return;
+  private resolvePendingRequests(message: string): void {
+    for (const [, pending] of this.pendingRequests) {
+      pending.resolve({ id: 0, error: { code: 1004, message } });
     }
-    try {
-      const result = await withTimeout(
-        this.request(createRequest(Methods.disconnectBoard, {})),
-        3000
-      );
-      if (isError(result)) {
-        logWarn('Backend', `Graceful disconnect failed: ${result.error.message}`);
-      }
-    } catch {
-      logWarn('Backend', 'Graceful disconnect timed out');
-    }
+    this.pendingRequests.clear();
   }
 
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('timeout')), timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      }
-    );
-  });
 }
 
 function waitForExit(child: cp.ChildProcess, timeoutMs: number): Promise<boolean> {
@@ -335,34 +306,11 @@ function platformTarget(): string {
 
 export function resolveNativeBackendCommand(
   context: vscode.ExtensionContext,
-  options: { preferPackaged?: boolean } = {},
 ): BackendCommand {
-  const override = process.env.CANMV_BACKEND_PATH || vscode.workspace.getConfiguration('canmv').get<string>('backendPath', '');
   const packaged = path.join(context.extensionPath, 'bin', platformTarget(), executableName());
 
-  if (options.preferPackaged && fs.existsSync(packaged)) {
-    return {
-      label: 'Go backend',
-      command: packaged,
-      args: [],
-      cwd: path.dirname(packaged),
-    };
-  }
-
-  if (override) {
-    if (!fs.existsSync(override)) {
-      throw new Error(`Configured CanMV backend executable not found: ${override}`);
-    }
-    return {
-      label: 'configured backend',
-      command: override,
-      args: [],
-      cwd: path.dirname(override),
-    };
-  }
-
   if (!fs.existsSync(packaged)) {
-    throw new Error(`CanMV Go backend executable not found for ${platformTarget()}. Set canmv.backendPath or install a platform-specific extension package.`);
+    throw new Error(`CanMV Go backend executable not found for ${platformTarget()}. Install a platform-specific extension package.`);
   }
   return {
     label: 'Go backend',

@@ -42,6 +42,11 @@ func (p *legacyProtocol) ScriptRunning(board *usbdbg.Board, fallback bool) (bool
 	return running, nil
 }
 
+func (p *legacyProtocol) ScriptBusy(board *usbdbg.Board, fallback bool) (bool, error) {
+	// Legacy firmware has only the IDE-script state command.
+	return p.ScriptRunning(board, fallback)
+}
+
 func (p *legacyProtocol) DrainTxBuf(board *usbdbg.Board) ([]byte, error) {
 	return board.DrainTxBufLegacy()
 }
@@ -64,6 +69,10 @@ func (p *legacyProtocol) VirtualTouchEvent(board *usbdbg.Board, event usbdbg.Vir
 
 func (p *legacyProtocol) ListDir(board *usbdbg.Board, path string) ([]usbdbg.FileEntry, error) {
 	return nil, unsupportedError("file explorer")
+}
+
+func (p *legacyProtocol) ListDirPage(board *usbdbg.Board, path string, offset uint32) (usbdbg.DirPage, error) {
+	return usbdbg.DirPage{}, unsupportedError("paged directory listing")
 }
 
 func (p *legacyProtocol) QueryFileStat(board *usbdbg.Board, path string) (usbdbg.FileStat, error) {

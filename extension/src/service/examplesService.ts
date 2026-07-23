@@ -174,7 +174,7 @@ export class ExamplesService {
   }
 
   private async extractArchive(archivePath: string, targetDir: string): Promise<void> {
-    const backend = resolveNativeBackendCommand(this.context, { preferPackaged: true });
+    const backend = resolveNativeBackendCommand(this.context);
     await new Promise<void>((resolve, reject) => {
       execFile(
         backend.command,

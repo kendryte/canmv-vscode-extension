@@ -72,8 +72,6 @@ cd native/go
 go build ./cmd/canmv-backend
 ```
 
-To use a custom backend while developing, set `canmv.backendPath` in Visual Studio Code settings or export `CANMV_BACKEND_PATH`.
-
 ## Documentation
 
 - Extension user guide: [`extension/README.md`](extension/README.md)
@@ -82,7 +80,7 @@ To use a custom backend while developing, set `canmv.backendPath` in Visual Stud
 
 ## Troubleshooting
 
-- If the extension cannot find the backend, run `./scripts/stage-current-backend.sh` or set `canmv.backendPath`.
+- If the extension cannot find the backend, run `./scripts/stage-current-backend.sh` or install a platform-specific extension package.
 - If TypeScript output looks stale, run `npm run compile` from `extension/`.
-- If the board is not detected, check the USB cable, board power, serial permissions, and `canmv.serialPath`.
+- If the board is not detected, check the USB cable, board power, and serial permissions.
 - Use the `CanMV` Output channel in Visual Studio Code for backend, connection, preview, stubs, and file-transfer diagnostics.

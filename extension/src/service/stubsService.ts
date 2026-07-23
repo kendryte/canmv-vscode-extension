@@ -826,7 +826,7 @@ export class StubsService {
       throw new Error('CanMV backend unavailable for stubs archive extraction');
     }
 
-    const backend = resolveNativeBackendCommand(this.context, { preferPackaged: true });
+    const backend = resolveNativeBackendCommand(this.context);
     await new Promise<void>((resolve, reject) => {
       execFile(
         backend.command,

@@ -31,10 +31,9 @@
   "canmv.view.terminal": "CanMV Terminal",
   "canmv.submenu.editorMenu": "CanMV",
   "canmv.configuration.title": "CanMV",
-  "canmv.configuration.serialPath.description": "Serial device path. Leave empty to auto-detect CanMV devices by USB VID:PID 1209:abd1. Set manually to override: e.g., /dev/ttyACM0",
-  "canmv.configuration.baudRate.description": "Serial baud rate (default: 12M for K230 USB CDC). Only used when serialPath is manually set.",
-  "canmv.configuration.backendPath.description": "Path to a CanMV backend executable. Leave empty to use the backend bundled with the extension.",
+  "canmv.configuration.baudRate.description": "Serial baud rate for detected boards (default: 12M for K230 USB CDC).",
   "canmv.configuration.autoReconnect.description": "Automatically reconnect on unexpected disconnect",
+  "canmv.configuration.autoMinifyStartupScripts.description": "Minify /sdcard/main.py and /sdcard/boot.py before uploading",
   "canmv.configuration.stubsAutoDownload.description": "Automatically download K230 stubs and examples on board connect",
   "canmv.mcp.provider.label": "CanMV MCP Server"
 }
