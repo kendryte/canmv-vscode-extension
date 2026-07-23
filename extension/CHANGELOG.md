@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.2
+
+- Added startup-script minification for `/sdcard/main.py` and `/sdcard/boot.py`, removing comments, standalone triple-quoted comment blocks, blank lines, and trailing whitespace while preserving string values and Python indentation
+- Added the `canmv.autoMinifyStartupScripts` setting so startup-script minification can be disabled when source preservation is required
+- Added paged remote directory listing to keep large device trees complete and resumable
+- Improved script and busy-state handling across IDE runs, REPL workflows, preview, and MCP operations
+- Improved board detection and connection error handling, backend shutdown behavior, and MCP file operations
+- Expanded backend and protocol tests for script state, directory pagination, and board capability handling
+
 ## 0.9.1
 
 - Fixed large remote file downloads by reading files in bounded chunks instead of one timeout-prone response
