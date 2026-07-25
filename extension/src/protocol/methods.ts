@@ -175,6 +175,34 @@ export const Methods = {
     result: {} as { success: boolean },
     errors: { 4001: 'File not found', 4003: 'Write error' },
   },
+  /** Start a chunked file overwrite. */
+  ioBeginWriteFile: {
+    method: 'io.beginWriteFile' as const,
+    params: {} as { path: string; size: number; sha256Base64: string },
+    result: {} as { success: boolean; errorCode?: number },
+    errors: { 4003: 'Write error', 4008: 'File write unsupported' },
+  },
+  /** Write the next chunk of an active file overwrite. */
+  ioWriteFileChunk: {
+    method: 'io.writeFileChunk' as const,
+    params: {} as { dataBase64: string },
+    result: {} as { success: boolean; errorCode?: number },
+    errors: { 4003: 'Write error' },
+  },
+  /** Flush and verify an active chunked file overwrite. */
+  ioFinishWriteFile: {
+    method: 'io.finishWriteFile' as const,
+    params: {} as Record<string, never>,
+    result: {} as { success: boolean; errorCode?: number },
+    errors: { 4003: 'Write error' },
+  },
+  /** End an incomplete chunked write and release device-side transfer state. */
+  ioAbortWriteFile: {
+    method: 'io.abortWriteFile' as const,
+    params: {} as Record<string, never>,
+    result: {} as { success: boolean },
+    errors: {},
+  },
   /** Delete a file on the board. */
   ioDeleteFile: {
     method: 'io.deleteFile' as const,

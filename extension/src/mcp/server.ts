@@ -62,7 +62,7 @@ const SERVER_NAME = 'canmv-k230';
 const DEFAULT_BAUD_RATE = readNumberEnv('CANMV_BAUD_RATE', 12000000);
 const AUTO_MINIFY_STARTUP_SCRIPTS = readBooleanEnv('CANMV_AUTO_MINIFY_STARTUP_SCRIPTS', true);
 const REQUEST_TIMEOUT_MS = 15000;
-const REMOTE_FILE_CHUNK_SIZE = 128 * 1024;
+const REMOTE_FILE_READ_CHUNK_SIZE = 32 * 1024;
 const REMOTE_FILE_CHUNK_TIMEOUT_MS = 30_000;
 const MAX_DIRECTORY_LIST_PAGES = 100_000;
 const BOARD_READY_TIMEOUT_MS = 5000;
@@ -712,10 +712,10 @@ class CanmvMcpServer {
     const data = Buffer.alloc(fileSize);
     let offset = 0;
     while (offset < fileSize) {
-      const size = Math.min(REMOTE_FILE_CHUNK_SIZE, fileSize - offset);
+      const size = Math.min(REMOTE_FILE_READ_CHUNK_SIZE, fileSize - offset);
       const result = await this.requestResult(
         Methods.ioReadFile,
-        fileSize > REMOTE_FILE_CHUNK_SIZE
+        fileSize > REMOTE_FILE_READ_CHUNK_SIZE
           ? { path: remotePath, offset, size }
           : { path: remotePath },
         { timeoutMs: REMOTE_FILE_CHUNK_TIMEOUT_MS },

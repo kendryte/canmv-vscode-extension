@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -35,6 +37,17 @@ type server struct {
 	protocolHandler   boardprotocol.Handler
 	virtualTouchCache usbdbg.VirtualTouchStatus
 	virtualTouchAt    time.Time
+	fileWrite         *fileWriteSession
+	fileWriteDone     chan struct{}
+}
+
+type fileWriteSession struct {
+	board         *usbdbg.Board
+	path          string
+	size          uint64
+	bytesWritten  uint64
+	chunksWritten uint64
+	startedAt     time.Time
 }
 
 const (
@@ -42,6 +55,8 @@ const (
 	previewNoFrameRetryLimit   = 8
 	previewWindowsTimerGuard   = 6 * time.Millisecond
 	scriptOutputEventChunkSize = 32 * 1024
+	fileReadChunkSize          = 32 * 1024
+	fileWriteChunkSize         = 8 * 1024
 	// Require a second idle sample before publishing completion so a transient
 	// serial read cannot immediately clear the script UI.
 	scriptStoppedConfirmations = 2
@@ -182,6 +197,14 @@ func (s *server) handle(method string, params map[string]interface{}) (interface
 		return s.readFile(params)
 	case "io.writeFile":
 		return s.writeFile(params)
+	case "io.beginWriteFile":
+		return s.beginWriteFile(params)
+	case "io.writeFileChunk":
+		return s.writeFileChunk(params)
+	case "io.finishWriteFile":
+		return s.finishWriteFile()
+	case "io.abortWriteFile":
+		return s.abortWriteFile()
 	case "io.deleteFile":
 		return s.simpleFileOp(params, usbdbg.CmdDeleteFile, "path")
 	case "io.renameFile":
@@ -202,14 +225,17 @@ func (s *server) connectBoard(params map[string]interface{}) (interface{}, int, 
 	}
 	portName = usbdbg.NormalizePortName(portName)
 	baudRate := intParam(params, "baudRate", 12000000)
+	_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] connect requested port=%q baud=%d\n", portName, baudRate)
 
 	if s.board != nil {
 		s.cleanupBoard()
 	}
 	board, err := usbdbg.Open(portName, baudRate)
 	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] connect serial open failed port=%q baud=%d error=%v\n", portName, baudRate, err)
 		return nil, 1001, err.Error()
 	}
+	_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] connect serial open succeeded port=%q; DTR attach edge and input drain completed\n", portName)
 	s.boardMu.Lock()
 	s.board = board
 	s.closing = false
@@ -221,10 +247,22 @@ func (s *server) connectBoard(params map[string]interface{}) (interface{}, int, 
 	protocolHandler := s.negotiateProtocol(board)
 	profile := protocolHandler.Profile()
 	fwFull := profile.FirmwareFull()
-	arch, _ := board.ArchStr()
+	arch, archErr := board.ArchStr()
+	if archErr != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] connect ARCH_STR probe failed: %v\n", archErr)
+	}
+	if !handshakeResponded(profile.ProtocolVersion(), fwFull, arch) {
+		message := fmt.Sprintf("board opened on %s but did not respond to any USBDBG handshake command", portName)
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] connect rejected: %s\n", message)
+		s.abortBoard()
+		return nil, 1002, message
+	}
 	fw := firmwareVersionForUser(fwFull)
 	boardName, memorySize := boardInfoFromArch(arch)
-	_ = s.enableFramebuffer(board)
+	if err := s.enableFramebuffer(board); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] connect framebuffer enable failed: %v\n", err)
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] connect handshake result protocol=%d capability_protocol=%t firmware=%q arch=%q\n", profile.ProtocolVersion(), protocolHandler.HasCapabilitiesProtocol(), fwFull, arch)
 	if protocolHandler.HasCapabilitiesProtocol() {
 		s.scheduleConnectSoftReset(board, s.currentOperationSeq())
 	} else {
@@ -244,6 +282,10 @@ func (s *server) connectBoard(params map[string]interface{}) (interface{}, int, 
 		"port":            portName,
 		"repl":            "",
 	}, 0, ""
+}
+
+func handshakeResponded(protocolVersion uint32, firmware string, arch string) bool {
+	return protocolVersion != 0 || firmware != "" || arch != ""
 }
 
 func (s *server) getFirmwareCommit() (interface{}, int, string) {
@@ -525,6 +567,9 @@ func (s *server) startPreview(params map[string]interface{}) (interface{}, int, 
 func (s *server) listDir(params map[string]interface{}) (interface{}, int, string) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
+	if s.fileWrite != nil {
+		return nil, 4003, "file transfer in progress"
+	}
 
 	board := s.currentBoard()
 	if board == nil {
@@ -559,6 +604,9 @@ func (s *server) listDir(params map[string]interface{}) (interface{}, int, strin
 func (s *server) queryFileStat(params map[string]interface{}) (interface{}, int, string) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
+	if s.fileWrite != nil {
+		return nil, 4003, "file transfer in progress"
+	}
 
 	board := s.currentBoard()
 	if board == nil {
@@ -577,6 +625,9 @@ func (s *server) queryFileStat(params map[string]interface{}) (interface{}, int,
 func (s *server) readFile(params map[string]interface{}) (interface{}, int, string) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
+	if s.fileWrite != nil {
+		return nil, 4003, "file transfer in progress"
+	}
 
 	board := s.currentBoard()
 	if board == nil {
@@ -590,10 +641,10 @@ func (s *server) readFile(params map[string]interface{}) (interface{}, int, stri
 	var err error
 	if _, ranged := params["offset"]; ranged {
 		offset := uint32Param(params, "offset", 0)
-		size := uint32Param(params, "size", 128*1024)
+		size := uint32Param(params, "size", fileReadChunkSize)
 		data, err = s.currentProtocol().ReadFileChunk(board, path, offset, size)
 	} else {
-		data, err = s.currentProtocol().ReadFileAll(board, path, 128*1024)
+		data, err = s.currentProtocol().ReadFileAll(board, path, fileReadChunkSize)
 	}
 	if err != nil {
 		return nil, 4003, err.Error()
@@ -604,6 +655,9 @@ func (s *server) readFile(params map[string]interface{}) (interface{}, int, stri
 func (s *server) writeFile(params map[string]interface{}) (interface{}, int, string) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
+	if s.fileWrite != nil {
+		return nil, 4003, "file transfer in progress"
+	}
 
 	board := s.currentBoard()
 	if board == nil {
@@ -624,13 +678,151 @@ func (s *server) writeFile(params map[string]interface{}) (interface{}, int, str
 		}
 		data = decoded
 	}
-	errCode := s.currentProtocol().WriteFile(board, path, data, 128*1024)
+	errCode := s.currentProtocol().WriteFile(board, path, data, fileWriteChunkSize)
 	return fileOpResult(errCode), 0, ""
+}
+
+func (s *server) beginWriteFile(params map[string]interface{}) (interface{}, int, string) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	board := s.currentBoard()
+	if board == nil {
+		return map[string]interface{}{"success": false, "error": "Not connected"}, 0, ""
+	}
+	if !s.hasCapability(usbdbg.CapWriteFile) {
+		return unsupportedFileOpResult("File write is not supported by this firmware"), 0, ""
+	}
+	path := stringParam(params, "path", "")
+	if !isWritablePath(path) {
+		return rejectProtectedPath(), 0, ""
+	}
+	size := uint64Param(params, "size", 0)
+	encodedSum := stringParam(params, "sha256Base64", "")
+	sum, err := base64.StdEncoding.DecodeString(encodedSum)
+	if err != nil || len(sum) != sha256.Size {
+		return nil, 4003, "invalid file SHA-256"
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], sum)
+
+	// CREATEFILE2 closes a previous unfinished transfer on the device, so a new
+	// begin request is a safe replacement for abandoned client-side state.
+	s.clearFileWriteLocked()
+	startedAt := time.Now()
+	_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] file upload begin path=%q size=%d chunk_size=%d\n", path, size, fileWriteChunkSize)
+	errCode := board.BeginWriteFile(path, digest, fileWriteChunkSize)
+	if !fileOpSucceeded(errCode) {
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] file upload begin failed path=%q error_code=%d elapsed=%s\n", path, errCode, time.Since(startedAt).Round(time.Millisecond))
+		return fileOpResult(errCode), 0, ""
+	}
+	s.fileWrite = &fileWriteSession{board: board, path: path, size: size, startedAt: startedAt}
+	s.fileWriteDone = make(chan struct{})
+	return fileOpResult(errCode), 0, ""
+}
+
+func (s *server) writeFileChunk(params map[string]interface{}) (interface{}, int, string) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	session := s.fileWrite
+	board := s.currentBoard()
+	if session == nil || board == nil || session.board != board {
+		s.clearFileWriteLocked()
+		return nil, 4003, "no active file write"
+	}
+	encoded := stringParam(params, "dataBase64", "")
+	if encoded == "" {
+		return nil, 4003, "file write chunk is empty"
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, 4003, "invalid base64 file chunk"
+	}
+	if len(data) > fileWriteChunkSize || uint64(session.bytesWritten)+uint64(len(data)) > uint64(session.size) {
+		s.abortWriteFileLocked()
+		return nil, 4003, "file write chunk exceeds declared size"
+	}
+	chunkStartedAt := time.Now()
+	errCode := board.WriteFileChunk(data)
+	if !fileOpSucceeded(errCode) {
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] file upload chunk failed path=%q chunk=%d offset=%d size=%d error_code=%d elapsed=%s\n",
+			session.path, session.chunksWritten+1, session.bytesWritten, len(data), errCode, time.Since(chunkStartedAt).Round(time.Millisecond))
+		// A missing WRITEFILE2 acknowledgement means the wire protocol may be
+		// desynchronized. Do not add another blocking VERIFYFILE request.
+		s.clearFileWriteLocked()
+		if errCode == ^uint32(0) {
+			_, _ = fmt.Fprintln(os.Stderr, "[canmv-backend] file upload transport failed; closing the serial session")
+			s.abortBoard()
+		}
+		return fileOpResult(errCode), 0, ""
+	}
+	previousMiB := session.bytesWritten / (1024 * 1024)
+	session.bytesWritten += uint64(len(data))
+	session.chunksWritten++
+	if session.bytesWritten == session.size || session.bytesWritten/(1024*1024) > previousMiB {
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] file upload progress path=%q chunks=%d bytes=%d/%d\n",
+			session.path, session.chunksWritten, session.bytesWritten, session.size)
+	}
+	return fileOpResult(errCode), 0, ""
+}
+
+func (s *server) finishWriteFile() (interface{}, int, string) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	session := s.fileWrite
+	board := s.currentBoard()
+	if session == nil || board == nil || session.board != board {
+		s.clearFileWriteLocked()
+		return nil, 4003, "no active file write"
+	}
+	if session.bytesWritten != session.size {
+		s.abortWriteFileLocked()
+		return nil, 4003, "file write is incomplete"
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] file upload verification begin path=%q bytes=%d\n",
+		session.path, session.bytesWritten)
+	errCode := board.FinishWriteFile()
+	_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] file upload finish path=%q chunks=%d bytes=%d/%d error_code=%d elapsed=%s\n",
+		session.path, session.chunksWritten, session.bytesWritten, session.size, errCode, time.Since(session.startedAt).Round(time.Millisecond))
+	s.clearFileWriteLocked()
+	return fileOpResult(errCode), 0, ""
+}
+
+func (s *server) abortWriteFile() (interface{}, int, string) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	s.abortWriteFileLocked()
+	return map[string]bool{"success": true}, 0, ""
+}
+
+// abortWriteFileLocked ends a partial upload so the firmware closes its FILE
+// handle and releases the transfer buffer. The checksum result is irrelevant.
+func (s *server) abortWriteFileLocked() {
+	session := s.fileWrite
+	if session != nil && session.board == s.currentBoard() {
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] file upload abort path=%q chunks=%d bytes=%d/%d elapsed=%s\n",
+			session.path, session.chunksWritten, session.bytesWritten, session.size, time.Since(session.startedAt).Round(time.Millisecond))
+		_ = session.board.FinishWriteFile()
+	}
+	s.clearFileWriteLocked()
+}
+
+func (s *server) clearFileWriteLocked() {
+	s.fileWrite = nil
+	if s.fileWriteDone != nil {
+		close(s.fileWriteDone)
+		s.fileWriteDone = nil
+	}
 }
 
 func (s *server) simpleFileOp(params map[string]interface{}, opcode byte, key string) (interface{}, int, string) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
+	if s.fileWrite != nil {
+		return nil, 4003, "file transfer in progress"
+	}
 
 	board := s.currentBoard()
 	if board == nil {
@@ -650,6 +842,9 @@ func (s *server) simpleFileOp(params map[string]interface{}, opcode byte, key st
 func (s *server) renameFile(params map[string]interface{}) (interface{}, int, string) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
+	if s.fileWrite != nil {
+		return nil, 4003, "file transfer in progress"
+	}
 
 	board := s.currentBoard()
 	if board == nil {
@@ -1058,6 +1253,7 @@ func (s *server) cleanupBoard() {
 	s.stopPreview()
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
+	s.abortWriteFileLocked()
 
 	s.boardMu.Lock()
 	board := s.board
@@ -1179,16 +1375,29 @@ func stopRequested(stop <-chan struct{}) bool {
 }
 
 func (s *server) withWorkerBoardOperation(stop <-chan struct{}, board *usbdbg.Board, operationSeq uint64, fn func()) bool {
-	if stopRequested(stop) || !s.isWorkerCurrent(board, operationSeq) {
-		return false
+	for {
+		if stopRequested(stop) || !s.isWorkerCurrent(board, operationSeq) {
+			return false
+		}
+		s.opMu.Lock()
+		if stopRequested(stop) || !s.isWorkerCurrent(board, operationSeq) {
+			s.opMu.Unlock()
+			return false
+		}
+		if s.fileWrite == nil {
+			fn()
+			s.opMu.Unlock()
+			return true
+		}
+		done := s.fileWriteDone
+		s.opMu.Unlock()
+
+		select {
+		case <-stop:
+			return false
+		case <-done:
+		}
 	}
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
-	if stopRequested(stop) || !s.isWorkerCurrent(board, operationSeq) {
-		return false
-	}
-	fn()
-	return true
 }
 
 func (s *server) isConnectSetupCurrent(board *usbdbg.Board, operationSeq uint64) bool {
@@ -1481,6 +1690,25 @@ func uint32Param(params map[string]interface{}, key string, fallback uint32) uin
 	}
 }
 
+func uint64Param(params map[string]interface{}, key string, fallback uint64) uint64 {
+	switch value := params[key].(type) {
+	case float64:
+		if math.IsNaN(value) || math.IsInf(value, 0) || math.Trunc(value) != value || value < 0 || value > float64(^uint64(0)) {
+			return fallback
+		}
+		return uint64(value)
+	case int:
+		if value < 0 {
+			return fallback
+		}
+		return uint64(value)
+	case uint64:
+		return value
+	default:
+		return fallback
+	}
+}
+
 func virtualTouchStatusResult(status usbdbg.VirtualTouchStatus) map[string]interface{} {
 	result := map[string]interface{}{
 		"supported":  status.Supported,
@@ -1556,7 +1784,11 @@ func unsupportedFileOpResult(message string) map[string]interface{} {
 }
 
 func fileOpResult(errCode uint32) map[string]interface{} {
-	return map[string]interface{}{"success": errCode == 0 || errCode == 1024, "errorCode": errCode}
+	return map[string]interface{}{"success": fileOpSucceeded(errCode), "errorCode": errCode}
+}
+
+func fileOpSucceeded(errCode uint32) bool {
+	return errCode == 0 || errCode == 1024
 }
 
 func capabilityForSimpleFileOp(opcode byte) uint32 {

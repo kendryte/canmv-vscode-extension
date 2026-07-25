@@ -9,7 +9,7 @@ import { TerminalViewProvider } from './webview/TerminalViewProvider';
 import { BoardService, type BoardInfo } from './service/boardService';
 import { ScriptService } from './service/scriptService';
 import { VideoService } from './service/videoService';
-import { FileService } from './service/fileService';
+import { FileService, type FileTransferProgress } from './service/fileService';
 import { StubsService } from './service/stubsService';
 import { CanmvResourceService } from './service/canmvResourceService';
 import { RemoteMirrorService } from './service/remoteMirrorService';
@@ -1535,14 +1535,30 @@ export function activate(context: vscode.ExtensionContext) {
         openLabel: t('Upload Files'),
       });
       if (!files || files.length === 0) return;
+      const uploads = files.map((file) => {
+        const remotePath = childPath(item.absPath, path.basename(file.fsPath));
+        return { file, remotePath, totals: fileService.measureUpload(file.fsPath, remotePath) };
+      });
+      const totalBytes = uploads.reduce((sum, upload) => sum + upload.totals.bytes, 0);
+      const totalFiles = uploads.reduce((sum, upload) => sum + upload.totals.files, 0);
       try {
         await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: t('Uploading files to CanMV') },
           async (progress) => {
-            for (let index = 0; index < files.length; index++) {
-              const file = files[index];
-              progress.report({ message: path.basename(file.fsPath), increment: files.length ? 100 / files.length : 0 });
-              await fileService.upload(file.fsPath, childPath(item.absPath, path.basename(file.fsPath)));
+            const tracker = { lastBytes: 0 };
+            let byteOffset = 0;
+            let fileOffset = 0;
+            for (const upload of uploads) {
+              await fileService.upload(upload.file.fsPath, upload.remotePath, (event) => {
+                reportFileTransferProgress(progress, event, tracker, {
+                  byteOffset,
+                  fileOffset,
+                  totalBytes,
+                  totalFiles,
+                });
+              });
+              byteOffset += upload.totals.bytes;
+              fileOffset += upload.totals.files;
             }
           }
         );
@@ -1564,12 +1580,18 @@ export function activate(context: vscode.ExtensionContext) {
       if (!folders || folders.length === 0) return;
       const folder = folders[0];
       const remotePath = childPath(item.absPath, path.basename(folder.fsPath));
+      const totals = fileService.measureUpload(folder.fsPath, remotePath);
       try {
         await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: t('Uploading folder to CanMV') },
           async (progress) => {
-            progress.report({ message: path.basename(folder.fsPath) });
-            await fileService.upload(folder.fsPath, remotePath);
+            const tracker = { lastBytes: 0 };
+            await fileService.upload(folder.fsPath, remotePath, (event) => {
+              reportFileTransferProgress(progress, event, tracker, {
+                totalBytes: totals.bytes,
+                totalFiles: totals.files,
+              });
+            });
           }
         );
         refreshExplorer();
@@ -1615,8 +1637,10 @@ export function activate(context: vscode.ExtensionContext) {
         await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: t('Downloading {label} from CanMV', { label }) },
           async (progress) => {
-            progress.report({ message: item.absPath });
-            await fileService.download(item.absPath, localPath);
+            const tracker = { lastBytes: 0 };
+            await fileService.download(item.absPath, localPath, (event) => {
+              reportFileTransferProgress(progress, event, tracker);
+            });
           }
         );
         void vscode.window.showInformationMessage(t('CanMV: Downloaded {name} to {path}', { name: item.name, path: localPath }));
@@ -1768,6 +1792,60 @@ export function activate(context: vscode.ExtensionContext) {
 
   toolHost.open('preview');
   logInfo('Extension', 'Activation complete');
+}
+
+interface FileTransferProgressScope {
+  byteOffset?: number;
+  fileOffset?: number;
+  totalBytes?: number;
+  totalFiles?: number;
+}
+
+function reportFileTransferProgress(
+  progress: vscode.Progress<{ message?: string; increment?: number }>,
+  event: FileTransferProgress,
+  tracker: { lastBytes: number },
+  scope: FileTransferProgressScope = {},
+): void {
+  const totalBytes = scope.totalBytes ?? event.totalBytes;
+  const totalFiles = scope.totalFiles ?? event.totalFiles;
+  const bytesTransferred = Math.min(totalBytes, (scope.byteOffset ?? 0) + event.bytesTransferred);
+  const filesTransferred = Math.min(totalFiles, (scope.fileOffset ?? 0) + event.filesTransferred);
+  const increment = totalBytes > 0
+    ? Math.max(0, (bytesTransferred - tracker.lastBytes) * 100 / totalBytes)
+    : undefined;
+  tracker.lastBytes = Math.max(tracker.lastBytes, bytesTransferred);
+
+  const name = path.basename(event.path) || event.path;
+  let message: string;
+  if (event.phase === 'scanning') {
+    message = t('Scanning {name}', { name });
+  } else if (event.phase === 'hashing') {
+    message = t('Hashing {name}', { name });
+  } else if (event.phase === 'verifying') {
+    message = t('Verifying {name}', { name });
+  } else if (totalBytes > 0) {
+    const percent = Math.min(100, Math.floor(bytesTransferred * 100 / totalBytes));
+    message = `${name} - ${formatTransferSize(bytesTransferred)} / ${formatTransferSize(totalBytes)} (${percent}%)`;
+  } else {
+    message = name;
+  }
+  if (totalFiles > 1) {
+    message += ` - ${filesTransferred}/${totalFiles} ${t('files')}`;
+  }
+  progress.report({ message, increment });
+}
+
+function formatTransferSize(size: number): string {
+  if (!Number.isFinite(size) || size <= 0) return '0 B';
+  const units = ['B', 'KiB', 'MiB', 'GiB'];
+  let value = size;
+  let unit = units[0];
+  for (let index = 1; index < units.length && value >= 1024; index++) {
+    value /= 1024;
+    unit = units[index];
+  }
+  return `${value.toFixed(unit === 'B' || value >= 10 ? 0 : 1)} ${unit}`;
 }
 
 function logActivationInfo(context: vscode.ExtensionContext): void {

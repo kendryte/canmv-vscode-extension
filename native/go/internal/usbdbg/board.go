@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -86,6 +87,8 @@ const (
 	maxTxBufPayload     = 128 * 1024
 	maxLegacyTxBuf      = 128 * 1024
 	listDirReadTimeout  = 30 * time.Second
+	fileTransferTimeout = 10 * time.Second
+	fileVerifyTimeout   = 5 * time.Minute
 
 	// A paging request is sent through CmdListDir using a reserved path prefix.
 	// CapListDirPaged gates it so older firmware continues using the legacy
@@ -238,7 +241,7 @@ func (b *Board) Sync() error {
 	defer b.mu.Unlock()
 
 	if err := b.writeCommandLocked(CmdQueryStatus, 0, nil); err != nil {
-		return err
+		return fmt.Errorf("USBDBG %s status-marker request: %w", commandLabel(CmdQueryStatus), err)
 	}
 
 	// window holds the most recent up-to-4 bytes seen so the marker can be
@@ -249,7 +252,7 @@ func (b *Board) Sync() error {
 	for {
 		n, err := b.port.Read(buf)
 		if err != nil {
-			return err
+			return fmt.Errorf("USBDBG %s status-marker read after discarding %d bytes: %w", commandLabel(CmdQueryStatus), discarded, err)
 		}
 		if n == 0 {
 			return fmt.Errorf("sync: timed out waiting for status marker (discarded %d bytes)", discarded)
@@ -589,24 +592,17 @@ func (b *Board) WriteFile(path string, data []byte, chunkSize uint32) uint32 {
 	if chunkSize == 0 || chunkSize > maxFileChunk {
 		chunkSize = maxFileChunk
 	}
-	pathBytes := []byte(path)
-	if len(pathBytes) >= 68 {
-		return 1024 + 11
-	}
 	sum := sha256.Sum256(data)
-	info := make([]byte, 4+68+32)
-	binary.LittleEndian.PutUint32(info[0:4], chunkSize)
-	copy(info[4:72], pathBytes)
-	copy(info[72:], sum[:])
-	ack, err := b.CommandReadWithPayloadLen(CmdCreateFile2, info, 4)
-	if err != nil {
-		return 0xffffffff
-	}
-	errCode := uint32(0xffffffff)
-	if len(ack) >= 4 {
-		errCode = binary.LittleEndian.Uint32(ack[:4])
-	}
-	if errCode != 0 && errCode != 1024 {
+
+	// A file transfer is a multi-command transaction. Keep other board work
+	// from interleaving with it, and allow the target time to flush SD writes
+	// and calculate the final checksum before declaring the link unresponsive.
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_ = b.port.SetReadTimeout(fileTransferTimeout)
+	defer b.port.SetReadTimeout(1 * time.Second)
+
+	if errCode := b.beginWriteFileLocked(path, sum, chunkSize); errCode != 0 {
 		return errCode
 	}
 	for offset := 0; offset < len(data); offset += int(chunkSize) {
@@ -614,21 +610,88 @@ func (b *Board) WriteFile(path string, data []byte, chunkSize uint32) uint32 {
 		if end > len(data) {
 			end = len(data)
 		}
-		chunk := data[offset:end]
-		ack, err = b.CommandReadWithPayloadLen(CmdWriteFile2, chunk, 4)
-		if err != nil || len(ack) < 4 {
-			return 0xffffffff
-		}
-		errCode = binary.LittleEndian.Uint32(ack[:4])
-		if errCode != 0 {
+		if errCode := b.writeFileChunkLocked(data[offset:end]); errCode != 0 {
 			return errCode
 		}
 	}
-	ack, err = b.SendCommandWithResponseLen(CmdVerifyFile, 4, nil)
+	_ = b.port.SetReadTimeout(fileVerifyTimeout)
+	return b.finishWriteFileLocked()
+}
+
+// BeginWriteFile initializes a capability-protocol file transfer. Callers must
+// supply the SHA-256 of all chunks and finish with FinishWriteFile.
+func (b *Board) BeginWriteFile(path string, sum [sha256.Size]byte, chunkSize uint32) uint32 {
+	if chunkSize == 0 || chunkSize > maxFileChunk {
+		chunkSize = maxFileChunk
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_ = b.port.SetReadTimeout(fileTransferTimeout)
+	defer b.port.SetReadTimeout(1 * time.Second)
+	return b.beginWriteFileLocked(path, sum, chunkSize)
+}
+
+// WriteFileChunk writes one previously announced chunk. A chunk must not be
+// larger than the chunk size supplied to BeginWriteFile.
+func (b *Board) WriteFileChunk(data []byte) uint32 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_ = b.port.SetReadTimeout(fileTransferTimeout)
+	defer b.port.SetReadTimeout(1 * time.Second)
+	return b.writeFileChunkLocked(data)
+}
+
+// FinishWriteFile flushes the file and verifies its SHA-256 checksum.
+func (b *Board) FinishWriteFile() uint32 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_ = b.port.SetReadTimeout(fileVerifyTimeout)
+	defer b.port.SetReadTimeout(1 * time.Second)
+	return b.finishWriteFileLocked()
+}
+
+func (b *Board) beginWriteFileLocked(path string, sum [sha256.Size]byte, chunkSize uint32) uint32 {
+	pathBytes := []byte(path)
+	if len(pathBytes) >= 68 {
+		return 1024 + 11
+	}
+	info := make([]byte, 4+68+sha256.Size)
+	binary.LittleEndian.PutUint32(info[0:4], chunkSize)
+	copy(info[4:72], pathBytes)
+	copy(info[72:], sum[:])
+	ack, err := b.commandReadLocked(CmdCreateFile2, uint32(len(info)), info, 4)
 	if err != nil || len(ack) < 4 {
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] CREATEFILE2 failed path=%q chunk_size=%d error=%v response_bytes=%d\n", path, chunkSize, err, len(ack))
 		return 0xffffffff
 	}
-	errCode = binary.LittleEndian.Uint32(ack[:4])
+	errCode := binary.LittleEndian.Uint32(ack[:4])
+	if errCode == 0 || errCode == 1024 {
+		return 0
+	}
+	return errCode
+}
+
+func (b *Board) writeFileChunkLocked(data []byte) uint32 {
+	if len(data) > maxFileChunk {
+		return 1024 + 4
+	}
+	ack, err := b.commandReadLocked(CmdWriteFile2, uint32(len(data)), data, 4)
+	if err != nil || len(ack) < 4 {
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] WRITEFILE2 failed payload_bytes=%d error=%v response_bytes=%d\n", len(data), err, len(ack))
+		return 0xffffffff
+	}
+	return binary.LittleEndian.Uint32(ack[:4])
+}
+
+func (b *Board) finishWriteFileLocked() uint32 {
+	startedAt := time.Now()
+	ack, err := b.commandReadLocked(CmdVerifyFile, 4, nil, 4)
+	if err != nil || len(ack) < 4 {
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] VERIFYFILE failed error=%v response_bytes=%d elapsed=%s timeout=%s\n",
+			err, len(ack), time.Since(startedAt).Round(time.Millisecond), fileVerifyTimeout)
+		return 0xffffffff
+	}
+	errCode := binary.LittleEndian.Uint32(ack[:4])
 	if errCode == 0 || errCode == 1024+7 {
 		return 0
 	}
@@ -727,15 +790,21 @@ func (b *Board) SendCommandWithResponseLen(opcode byte, respLen uint32, payload 
 func (b *Board) FireCommand(opcode byte, responseField uint32, payload []byte) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.writeCommandLocked(opcode, responseField, payload)
+	if err := b.writeCommandLocked(opcode, responseField, payload); err != nil {
+		return fmt.Errorf("USBDBG %s fire command: %w", commandLabel(opcode), err)
+	}
+	return nil
 }
 
 func (b *Board) CommandRead(opcode byte, responseField uint32, payload []byte, readLen uint32) ([]byte, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.commandReadLocked(opcode, responseField, payload, readLen)
+}
 
+func (b *Board) commandReadLocked(opcode byte, responseField uint32, payload []byte, readLen uint32) ([]byte, error) {
 	if err := b.writeCommandLocked(opcode, responseField, payload); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("USBDBG %s request: %w", commandLabel(opcode), err)
 	}
 	if readLen == 0 {
 		return nil, nil
@@ -743,7 +812,7 @@ func (b *Board) CommandRead(opcode byte, responseField uint32, payload []byte, r
 
 	data := make([]byte, readLen)
 	if err := readExact(b.port, data); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("USBDBG %s response (expected %d bytes): %w", commandLabel(opcode), readLen, err)
 	}
 	return data, nil
 }
@@ -927,7 +996,41 @@ func (b *Board) writeCommandLocked(opcode byte, responseField uint32, payload []
 	cmd[1] = opcode
 	binary.LittleEndian.PutUint32(cmd[2:], responseField)
 	copy(cmd[6:], payload)
-	return writeFull(b.port, cmd)
+	if err := writeFull(b.port, cmd); err != nil {
+		return fmt.Errorf("USBDBG %s write (response field %d, payload %d bytes): %w", commandLabel(opcode), responseField, len(payload), err)
+	}
+	return nil
+}
+
+func commandLabel(opcode byte) string {
+	switch opcode {
+	case CmdFWVersion:
+		return "FW_VERSION (0x80)"
+	case CmdFWVersionFull:
+		return "FW_VERSION_FULL (0xA3)"
+	case CmdArchStr:
+		return "ARCH_STR (0x83)"
+	case CmdQueryStatus:
+		return "QUERY_STATUS (0x8D)"
+	case CmdTxBufLen:
+		return "TX_BUF_LEN (0x8E)"
+	case CmdCapabilities:
+		return "CAPABILITIES (0xA2)"
+	case CmdCreateFile2:
+		return "CREATEFILE2 (0xA8)"
+	case CmdWriteFile2:
+		return "WRITEFILE2 (0xA9)"
+	case CmdVerifyFile:
+		return "VERIFYFILE (0xA1)"
+	case CmdListDir:
+		return "LIST_DIR (0xA6)"
+	case CmdReadFile:
+		return "READ_FILE (0xA7)"
+	case CmdSysReset:
+		return "SYS_RESET (0x0C)"
+	default:
+		return fmt.Sprintf("command 0x%02X", opcode)
+	}
 }
 
 // writeFull writes all of data, looping over short writes. The unix serial

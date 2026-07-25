@@ -5,6 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"canmv-backend/internal/usbdbg"
 )
 
 func TestFirmwareVersionForUser(t *testing.T) {
@@ -62,6 +65,99 @@ func TestScriptOutputChunkEndPreservesUTF8Boundary(t *testing.T) {
 	}
 	if got := scriptOutputChunkEnd(text, len("abc你")); got != len("abc你") {
 		t.Fatalf("scriptOutputChunkEnd exact boundary = %d, want %d", got, len("abc你"))
+	}
+}
+
+func TestFileTransferChunkSizes(t *testing.T) {
+	const legacyCDCRXFIFOSize = 16 * 1024
+	if fileWriteChunkSize != 8*1024 {
+		t.Fatalf("fileWriteChunkSize = %d, want 8 KiB", fileWriteChunkSize)
+	}
+	if fileReadChunkSize != 32*1024 {
+		t.Fatalf("fileReadChunkSize = %d, want 32 KiB", fileReadChunkSize)
+	}
+	if fileWriteChunkSize >= legacyCDCRXFIFOSize {
+		t.Fatalf("upload chunk %d must remain below legacy CDC RX FIFO %d", fileWriteChunkSize, legacyCDCRXFIFOSize)
+	}
+}
+
+func TestFilesystemRequestsRejectDuringStreamedWrite(t *testing.T) {
+	s := &server{fileWrite: &fileWriteSession{}}
+	operations := []struct {
+		name string
+		call func() (interface{}, int, string)
+	}{
+		{"list", func() (interface{}, int, string) { return s.listDir(nil) }},
+		{"stat", func() (interface{}, int, string) { return s.queryFileStat(nil) }},
+		{"read", func() (interface{}, int, string) { return s.readFile(nil) }},
+		{"legacy write", func() (interface{}, int, string) { return s.writeFile(nil) }},
+		{"delete", func() (interface{}, int, string) { return s.simpleFileOp(nil, usbdbg.CmdDeleteFile, "path") }},
+		{"rename", func() (interface{}, int, string) { return s.renameFile(nil) }},
+	}
+
+	for _, operation := range operations {
+		t.Run(operation.name, func(t *testing.T) {
+			_, code, message := operation.call()
+			if code != 4003 || message != "file transfer in progress" {
+				t.Fatalf("filesystem conflict = (%d, %q), want (4003, %q)", code, message, "file transfer in progress")
+			}
+		})
+	}
+}
+
+func TestHandshakeResponded(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol uint32
+		firmware string
+		arch     string
+		want     bool
+	}{
+		{name: "silent endpoint", want: false},
+		{name: "capability protocol", protocol: 2, want: true},
+		{name: "legacy firmware", firmware: "4.0.0", want: true},
+		{name: "architecture response", arch: "K230", want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := handshakeResponded(test.protocol, test.firmware, test.arch); got != test.want {
+				t.Fatalf("handshakeResponded(%d, %q, %q) = %t, want %t", test.protocol, test.firmware, test.arch, got, test.want)
+			}
+		})
+	}
+}
+
+func TestWorkerWaitsForStreamedWrite(t *testing.T) {
+	board := &usbdbg.Board{}
+	s := &server{
+		board:         board,
+		fileWrite:     &fileWriteSession{board: board},
+		fileWriteDone: make(chan struct{}),
+	}
+	ran := make(chan struct{})
+	completed := make(chan bool, 1)
+	stop := make(chan struct{})
+	go func() {
+		completed <- s.withWorkerBoardOperation(stop, board, 0, func() { close(ran) })
+	}()
+
+	select {
+	case <-ran:
+		t.Fatal("worker ran while file write was active")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	s.opMu.Lock()
+	s.clearFileWriteLocked()
+	s.opMu.Unlock()
+
+	select {
+	case <-ran:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not resume after file write finished")
+	}
+	if !<-completed {
+		t.Fatal("worker operation did not complete")
 	}
 }
 

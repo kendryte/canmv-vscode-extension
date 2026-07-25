@@ -48,19 +48,27 @@ func Negotiate(board *usbdbg.Board) Handler {
 	if board == nil {
 		return newLegacy(profile)
 	}
+	started := time.Now()
 
 	// Resynchronize the stream first. On a reconnect while a script is still
 	// streaming, leftover/in-flight bytes (a frame-dump tail, queued REPL output)
 	// can sit on the line; without a resync the fixed-length reads below would
 	// consume those bytes as the FW_VERSION/Capabilities reply and falsely
 	// negotiate down to legacy (reporting file/REPL features as unsupported).
-	_ = board.Sync()
+	if err := board.Sync(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] handshake sync failed: %v\n", err)
+	} else {
+		_, _ = fmt.Fprintln(os.Stderr, "[canmv-backend] handshake sync succeeded")
+	}
 
 	// Legacy firmware only enters USBDBG mode for a small token set. Probe with
 	// FW_VERSION first so newer commands are not routed into normal REPL input.
 	if fw, err := board.FWVersion(); err == nil {
 		profile.fwVersion = fw
 		profile.fwVersionFull = fw
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] handshake firmware probe succeeded: %s\n", fw)
+	} else {
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] handshake firmware probe failed: %v\n", err)
 	}
 
 	version, flags, err := board.Capabilities()
@@ -69,12 +77,15 @@ func Negotiate(board *usbdbg.Board) Handler {
 		// Re-align the stream and retry once. A clean resync means a genuine
 		// failure here reflects real (legacy) firmware, not a transient desync.
 		if syncErr := board.Sync(); syncErr != nil {
-			_, _ = board.DrainInput(120*time.Millisecond, 8)
+			drained, drainErr := board.DrainInput(120*time.Millisecond, 8)
+			_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] capabilities retry sync failed: %v; drained=%d bytes drain_error=%v\n", syncErr, len(drained), drainErr)
+		} else {
+			_, _ = fmt.Fprintln(os.Stderr, "[canmv-backend] capabilities retry sync succeeded")
 		}
 		version, flags, err = board.Capabilities()
 		if err != nil {
-			_, _ = board.DrainInput(30*time.Millisecond, 4)
-			_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] capabilities negotiation failed first=%v retry=%v\n", firstErr, err)
+			drained, drainErr := board.DrainInput(30*time.Millisecond, 4)
+			_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] capabilities negotiation failed first=%v retry=%v drained=%d bytes drain_error=%v elapsed=%s; using legacy protocol\n", firstErr, err, len(drained), drainErr, time.Since(started).Round(time.Millisecond))
 			profile.flags = CapTxBuf
 			return newLegacy(profile)
 		}
@@ -83,10 +94,14 @@ func Negotiate(board *usbdbg.Board) Handler {
 	profile.kind = KindV2
 	profile.version = version
 	profile.flags = flags | CapTxBuf
-	if fwFull, err := board.FWVersionFull(); err == nil && fwFull != "" {
+	if fwFull, fullErr := board.FWVersionFull(); fullErr == nil && fwFull != "" {
 		profile.fwVersionFull = fwFull
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] capabilities negotiation succeeded: version=%d flags=0x%08X firmware=%s elapsed=%s\n", version, flags, fwFull, time.Since(started).Round(time.Millisecond))
 	} else if profile.fwVersionFull == "" {
 		profile.fwVersionFull = profile.fwVersion
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] capabilities negotiation succeeded: version=%d flags=0x%08X full firmware probe unavailable=%v elapsed=%s\n", version, flags, fullErr, time.Since(started).Round(time.Millisecond))
+	} else {
+		_, _ = fmt.Fprintf(os.Stderr, "[canmv-backend] capabilities negotiation succeeded: version=%d flags=0x%08X full firmware probe unavailable=%v elapsed=%s\n", version, flags, fullErr, time.Since(started).Round(time.Millisecond))
 	}
 	return newV2(profile)
 }

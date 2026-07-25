@@ -1,7 +1,9 @@
 package usbdbg
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,6 +114,107 @@ func TestReadFileSendsRequestedRange(t *testing.T) {
 	}
 	if got := binary.LittleEndian.Uint32(port.written[10:14]); got != uint32(len(data)) {
 		t.Fatalf("ReadFile() size = %d, want %d", got, len(data))
+	}
+}
+
+func TestWriteFileUsesTransferTimeoutAndAcknowledgedCommands(t *testing.T) {
+	ack := make([]byte, 4)
+	port := &mockPort{reads: [][]byte{ack, ack, ack, ack}}
+	board := &Board{port: port}
+	data := []byte("abcde")
+
+	if got := board.WriteFile("/sdcard/test.bin", data, 3); got != 0 {
+		t.Fatalf("WriteFile() = %d, want success", got)
+	}
+
+	createLen := 6 + 104
+	firstChunkLen := 6 + len("abc")
+	secondChunkLen := 6 + len("de")
+	transferLen := createLen + firstChunkLen + secondChunkLen
+	if len(port.written) != transferLen+6 {
+		t.Fatalf("WriteFile() wrote %d bytes, want %d", len(port.written), transferLen+6)
+	}
+	commands := writtenCommands(t, port.written[:transferLen])
+	if len(commands) != 3 {
+		t.Fatalf("WriteFile() sent %d payload commands, want create and two chunks", len(commands))
+	}
+	if got := commands[0][1]; got != CmdCreateFile2 {
+		t.Fatalf("create opcode = %x, want %x", got, CmdCreateFile2)
+	}
+	if got := binary.LittleEndian.Uint32(commands[0][2:6]); got != 104 {
+		t.Fatalf("create payload length = %d, want 104", got)
+	}
+	if got := binary.LittleEndian.Uint32(commands[0][6:10]); got != 3 {
+		t.Fatalf("create chunk size = %d, want 3", got)
+	}
+	for index, want := range [][]byte{[]byte("abc"), []byte("de")} {
+		command := commands[index+1]
+		if got := command[1]; got != CmdWriteFile2 {
+			t.Fatalf("chunk %d opcode = %x, want %x", index, got, CmdWriteFile2)
+		}
+		if got := binary.LittleEndian.Uint32(command[2:6]); got != uint32(len(want)) {
+			t.Fatalf("chunk %d payload length = %d, want %d", index, got, len(want))
+		}
+		if got := string(command[6:]); got != string(want) {
+			t.Fatalf("chunk %d payload = %q, want %q", index, got, want)
+		}
+	}
+	verify := port.written[transferLen:]
+	if got := verify[1]; got != CmdVerifyFile {
+		t.Fatalf("verify opcode = %x, want %x", got, CmdVerifyFile)
+	}
+	if got := binary.LittleEndian.Uint32(verify[2:6]); got != 4 {
+		t.Fatalf("verify response length = %d, want 4", got)
+	}
+	if len(port.timeouts) != 3 ||
+		port.timeouts[0] != fileTransferTimeout ||
+		port.timeouts[1] != fileVerifyTimeout ||
+		port.timeouts[2] != time.Second {
+		t.Fatalf("transfer timeouts = %v, want [%s %s %s]", port.timeouts, fileTransferTimeout, fileVerifyTimeout, time.Second)
+	}
+}
+
+func TestWriteFileCanStreamAcrossCalls(t *testing.T) {
+	data := []byte("chunk")
+	sum := sha256.Sum256(data)
+	ack := make([]byte, 4)
+	port := &mockPort{reads: [][]byte{ack, ack, ack}}
+	board := &Board{port: port}
+
+	if got := board.BeginWriteFile("/sdcard/test.bin", sum, 16); got != 0 {
+		t.Fatalf("BeginWriteFile() = %d, want success", got)
+	}
+	if got := board.WriteFileChunk(data); got != 0 {
+		t.Fatalf("WriteFileChunk() = %d, want success", got)
+	}
+	if got := board.FinishWriteFile(); got != 0 {
+		t.Fatalf("FinishWriteFile() = %d, want success", got)
+	}
+
+	transferLen := 6 + 104 + 6 + len(data)
+	commands := writtenCommands(t, port.written[:transferLen])
+	if len(commands) != 2 || commands[0][1] != CmdCreateFile2 || commands[1][1] != CmdWriteFile2 {
+		t.Fatalf("streamed commands = % x", port.written[:transferLen])
+	}
+	if got := string(commands[1][6:]); got != string(data) {
+		t.Fatalf("streamed chunk = %q, want %q", got, data)
+	}
+	verify := port.written[transferLen:]
+	if len(verify) != 6 || verify[1] != CmdVerifyFile || binary.LittleEndian.Uint32(verify[2:6]) != 4 {
+		t.Fatalf("verify command = % x", verify)
+	}
+	if len(port.timeouts) != 6 {
+		t.Fatalf("streamed transfer set %d timeouts, want 6", len(port.timeouts))
+	}
+	wantTimeouts := []time.Duration{
+		fileTransferTimeout, time.Second,
+		fileTransferTimeout, time.Second,
+		fileVerifyTimeout, time.Second,
+	}
+	for index, want := range wantTimeouts {
+		if port.timeouts[index] != want {
+			t.Fatalf("streamed timeout %d = %s, want %s", index, port.timeouts[index], want)
+		}
 	}
 }
 
@@ -347,5 +450,16 @@ func TestCapabilitiesAcceptsPagedListCapability(t *testing.T) {
 	}
 	if flags&(1<<31) != 0 {
 		t.Fatalf("Capabilities() retained an unknown flag: %#x", flags)
+	}
+}
+
+func TestCapabilitiesErrorNamesTheFailingCommand(t *testing.T) {
+	board := &Board{port: &mockPort{}}
+	_, _, err := board.Capabilities()
+	if err == nil {
+		t.Fatal("Capabilities() error = nil, want short response error")
+	}
+	if !strings.Contains(err.Error(), "CAPABILITIES (0xA2) response (expected 8 bytes)") {
+		t.Fatalf("Capabilities() error = %q, want command and expected response length", err)
 	}
 }

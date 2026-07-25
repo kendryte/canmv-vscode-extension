@@ -195,7 +195,7 @@ function newlineLengthAt(source: string, index: number): number {
   return source[index] === '\n' ? 1 : 0;
 }
 
-function isStartupScriptPath(remotePath: string): boolean {
+export function isStartupScriptPath(remotePath: string): boolean {
   const normalized = '/' + remotePath
     .replace(/\\/g, '/')
     .replace(/^\/+/, '')
