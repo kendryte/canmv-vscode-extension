@@ -18,6 +18,7 @@ type mockPort struct {
 	readIdx     int
 	written     []byte
 	timeouts    []time.Duration
+	zeroWrites  int
 }
 
 func (m *mockPort) Read(p []byte) (int, error) {
@@ -31,6 +32,10 @@ func (m *mockPort) Read(p []byte) (int, error) {
 }
 
 func (m *mockPort) Write(p []byte) (int, error) {
+	if m.zeroWrites > 0 {
+		m.zeroWrites--
+		return 0, nil
+	}
 	m.written = append(m.written, p...)
 	return len(p), nil
 }
@@ -44,6 +49,17 @@ func markerBytes() []byte {
 	b := make([]byte, 4)
 	binary.LittleEndian.PutUint32(b, queryStatusMagic)
 	return b
+}
+
+func TestWriteFullRetriesTransientZeroLengthWrite(t *testing.T) {
+	port := &mockPort{zeroWrites: 1}
+	want := []byte("command")
+	if err := writeFull(port, want); err != nil {
+		t.Fatalf("writeFull() returned error after transient zero write: %v", err)
+	}
+	if got := string(port.written); got != string(want) {
+		t.Fatalf("writeFull() wrote %q, want %q", got, want)
+	}
 }
 
 func TestSyncLocksOntoMarker(t *testing.T) {

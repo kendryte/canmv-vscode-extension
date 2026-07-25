@@ -89,6 +89,8 @@ const (
 	listDirReadTimeout  = 30 * time.Second
 	fileTransferTimeout = 10 * time.Second
 	fileVerifyTimeout   = 5 * time.Minute
+	writeRetryDelay     = 5 * time.Millisecond
+	writeStallTimeout   = time.Second
 
 	// A paging request is sent through CmdListDir using a reserved path prefix.
 	// CapListDirPaged gates it so older firmware continues using the legacy
@@ -1040,16 +1042,23 @@ func commandLabel(opcode byte) string {
 // waits for completion via overlapped I/O. A truncated command header or
 // payload desyncs the device's frame parser, so all bytes must be written.
 func writeFull(port serial.Port, data []byte) error {
+	var stalledAt time.Time
 	for len(data) > 0 {
 		n, err := port.Write(data)
 		if n > 0 {
 			data = data[n:]
+			stalledAt = time.Time{}
 		}
 		if err != nil {
 			return err
 		}
 		if n == 0 && len(data) > 0 {
-			return fmt.Errorf("short write: device stopped accepting data with %d bytes left", len(data))
+			if stalledAt.IsZero() {
+				stalledAt = time.Now()
+			} else if time.Since(stalledAt) >= writeStallTimeout {
+				return fmt.Errorf("write stalled for %s with %d bytes left", writeStallTimeout, len(data))
+			}
+			time.Sleep(writeRetryDelay)
 		}
 	}
 	return nil

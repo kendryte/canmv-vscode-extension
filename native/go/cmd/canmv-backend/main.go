@@ -753,7 +753,7 @@ func (s *server) writeFileChunk(params map[string]interface{}) (interface{}, int
 		s.clearFileWriteLocked()
 		if errCode == ^uint32(0) {
 			_, _ = fmt.Fprintln(os.Stderr, "[canmv-backend] file upload transport failed; closing the serial session")
-			s.abortBoard()
+			s.reportBoardDisconnected(board, "file upload", fmt.Errorf("WRITEFILE2 transport failure"))
 		}
 		return fileOpResult(errCode), 0, ""
 	}
