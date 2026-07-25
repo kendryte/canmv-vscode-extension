@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.3
+
+- Added reliable streamed file uploads with 8 KiB write chunks for compatibility with legacy CanMV CDC receive buffers
+- Added 32 KiB remote file reads and extended final file verification timeouts for large-device-storage writes
+- Added determinate byte-level progress for single-file, multi-file, and recursive folder uploads and downloads, including scanning, hashing, and verification phases
+- Improved file-operation serialization, transfer cleanup, protocol recovery, connection handling, and diagnostics for interrupted or timed-out operations
+- Expanded backend, board protocol, and transfer tests for chunk sizing, verification timeouts, and long-running file operations
+
 ## 0.9.2
 
 - Added startup-script minification for `/sdcard/main.py` and `/sdcard/boot.py`, removing comments, standalone triple-quoted comment blocks, blank lines, and trailing whitespace while preserving string values and Python indentation
