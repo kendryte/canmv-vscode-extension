@@ -16,18 +16,30 @@ type mockPort struct {
 	serial.Port // embedded: unused methods panic if called
 	reads       [][]byte
 	readIdx     int
+	readOffset  int
+	readSizes   []int
 	written     []byte
 	timeouts    []time.Duration
 	zeroWrites  int
 }
 
 func (m *mockPort) Read(p []byte) (int, error) {
+	m.readSizes = append(m.readSizes, len(p))
 	if m.readIdx >= len(m.reads) {
 		return 0, nil // simulate a read timeout (no data)
 	}
 	chunk := m.reads[m.readIdx]
-	m.readIdx++
-	n := copy(p, chunk)
+	if len(chunk) == 0 {
+		m.readIdx++
+		m.readOffset = 0
+		return 0, nil
+	}
+	n := copy(p, chunk[m.readOffset:])
+	m.readOffset += n
+	if m.readOffset == len(chunk) {
+		m.readIdx++
+		m.readOffset = 0
+	}
 	return n, nil
 }
 
@@ -64,8 +76,9 @@ func TestWriteFullRetriesTransientZeroLengthWrite(t *testing.T) {
 
 func TestSyncLocksOntoMarker(t *testing.T) {
 	cases := map[string][][]byte{
-		"marker only":         {markerBytes()},
-		"garbage then marker": {[]byte{0x01, 0x02, 0x03}, markerBytes()},
+		"marker only":             {markerBytes()},
+		"garbage then marker":     {[]byte{0x01, 0x02, 0x03}, markerBytes()},
+		"transient empty receive": {[]byte{0x01}, {}, markerBytes()},
 		"marker straddles read": {
 			{0xAA, 0xBB}, // first two marker bytes (0xFFEEBBAA little-endian = AA BB EE FF)
 			{0xEE, 0xFF}, // remaining two
@@ -130,6 +143,57 @@ func TestReadFileSendsRequestedRange(t *testing.T) {
 	}
 	if got := binary.LittleEndian.Uint32(port.written[10:14]); got != uint32(len(data)) {
 		t.Fatalf("ReadFile() size = %d, want %d", got, len(data))
+	}
+}
+
+func TestReadFileAssemblesBoundedReceiveChunks(t *testing.T) {
+	path := "/data/large.bin"
+	data := []byte(strings.Repeat("x", 32*1024))
+	header := make([]byte, 12)
+	binary.LittleEndian.PutUint32(header[4:8], uint32(len(data)))
+	port := &mockPort{reads: [][]byte{header, data[:len(data)-1], {}, data[len(data)-1:]}}
+	board := &Board{port: port}
+
+	got, err := board.ReadFile(path, 0, uint32(len(data)))
+	if err != nil {
+		t.Fatalf("ReadFile() returned error: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("ReadFile() returned %d bytes, want %d", len(got), len(data))
+	}
+	if requested := binary.LittleEndian.Uint32(port.written[10:14]); requested != uint32(len(data)) {
+		t.Fatalf("ReadFile() requested %d bytes, want %d", requested, len(data))
+	}
+	for index, size := range port.readSizes {
+		if size != serialReceiveChunk {
+			t.Fatalf("physical read %d requested %d bytes, want %d", index, size, serialReceiveChunk)
+		}
+	}
+}
+
+func TestReadFileResyncsAndRetriesMalformedFrame(t *testing.T) {
+	path := "/data/model.bin"
+	data := []byte("recovered")
+	badHeader := make([]byte, 12)
+	binary.LittleEndian.PutUint32(badHeader[4:8], maxFileChunk+1)
+	goodHeader := make([]byte, 12)
+	binary.LittleEndian.PutUint32(goodHeader[4:8], uint32(len(data)))
+	port := &mockPort{reads: [][]byte{badHeader, markerBytes(), goodHeader, data}}
+	board := &Board{port: port}
+
+	got, err := board.ReadFile(path, 0, uint32(len(data)))
+	if err != nil {
+		t.Fatalf("ReadFile() returned error after resync: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("ReadFile() = %q, want %q", got, data)
+	}
+	commands := writtenCommands(t, port.written)
+	if len(commands) != 3 {
+		t.Fatalf("recovery sent %d commands, want 3", len(commands))
+	}
+	if commands[0][1] != CmdReadFile || commands[1][1] != CmdQueryStatus || commands[2][1] != CmdReadFile {
+		t.Fatalf("recovery opcodes = %x, %x, %x; want %x, %x, %x", commands[0][1], commands[1][1], commands[2][1], CmdReadFile, CmdQueryStatus, CmdReadFile)
 	}
 }
 

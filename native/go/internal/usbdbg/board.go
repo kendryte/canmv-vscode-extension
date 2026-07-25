@@ -80,17 +80,20 @@ const (
 
 	// Keep compatibility with legacy firmware's monolithic LIST_DIR reply.
 	// Firmware advertising CapListDirPaged uses maxDirPagePayload instead.
-	maxLegacyDirPayload = 8 * 1024 * 1024
-	maxDirPagePayload   = 8 * 1024
-	maxFileChunk        = 128 * 1024
-	maxFramePayload     = 50 * 1024 * 1024
-	maxTxBufPayload     = 128 * 1024
-	maxLegacyTxBuf      = 128 * 1024
-	listDirReadTimeout  = 30 * time.Second
-	fileTransferTimeout = 10 * time.Second
-	fileVerifyTimeout   = 5 * time.Minute
-	writeRetryDelay     = 5 * time.Millisecond
-	writeStallTimeout   = time.Second
+	maxLegacyDirPayload      = 8 * 1024 * 1024
+	maxDirPagePayload        = 8 * 1024
+	maxFileChunk             = 128 * 1024
+	maxFramePayload          = 50 * 1024 * 1024
+	maxTxBufPayload          = 128 * 1024
+	maxLegacyTxBuf           = 128 * 1024
+	listDirReadTimeout       = 30 * time.Second
+	fileTransferTimeout      = 10 * time.Second
+	fileVerifyTimeout        = 5 * time.Minute
+	writeRetryDelay          = 5 * time.Millisecond
+	writeStallTimeout        = time.Second
+	serialReceiveChunk       = 4 * 1024
+	frameContinuationTimeout = time.Second
+	receiveRetryDelay        = time.Millisecond
 
 	// A paging request is sent through CmdListDir using a reserved path prefix.
 	// CapListDirPaged gates it so older firmware continues using the legacy
@@ -251,14 +254,20 @@ func (b *Board) Sync() error {
 	var window []byte
 	buf := make([]byte, 4096)
 	discarded := 0
+	lastProgress := time.Now()
 	for {
 		n, err := b.port.Read(buf)
 		if err != nil {
 			return fmt.Errorf("USBDBG %s status-marker read after discarding %d bytes: %w", commandLabel(CmdQueryStatus), discarded, err)
 		}
 		if n == 0 {
-			return fmt.Errorf("sync: timed out waiting for status marker (discarded %d bytes)", discarded)
+			if time.Since(lastProgress) >= frameContinuationTimeout {
+				return fmt.Errorf("sync: timed out waiting for status marker (discarded %d bytes)", discarded)
+			}
+			time.Sleep(receiveRetryDelay)
+			continue
 		}
+		lastProgress = time.Now()
 		for i := 0; i < n; i++ {
 			window = append(window, buf[i])
 			if len(window) > 4 {
@@ -574,7 +583,14 @@ func (b *Board) ReadFile(path string, offset uint32, size uint32) ([]byte, error
 	payload = append(payload, nulString(path)...)
 	data, err := b.readFileResponse(payload)
 	if err != nil {
-		return nil, err
+		firstErr := err
+		if syncErr := b.Sync(); syncErr != nil {
+			return nil, fmt.Errorf("%v (resync failed: %v)", firstErr, syncErr)
+		}
+		data, err = b.readFileResponse(payload)
+		if err != nil {
+			return nil, fmt.Errorf("%v (after resync; first error: %v)", err, firstErr)
+		}
 	}
 	if len(data) < 12 {
 		return nil, fmt.Errorf("short read file header: got %d bytes", len(data))
@@ -844,8 +860,9 @@ func (b *Board) listDirPageLocked(path string, offset uint32) (DirPage, error) {
 		return DirPage{}, err
 	}
 
+	reader := newFrameAssembler(b.port)
 	header := make([]byte, 12)
-	if err := readExact(b.port, header); err != nil {
+	if err := reader.readExact(header); err != nil {
 		return DirPage{}, err
 	}
 	errCode := binary.LittleEndian.Uint32(header[0:4])
@@ -855,13 +872,13 @@ func (b *Board) listDirPageLocked(path string, offset uint32) (DirPage, error) {
 		return DirPage{}, fmt.Errorf("list dir paging is not supported by this firmware")
 	}
 	if payloadLen > maxDirPagePayload {
-		if err := discardExact(b.port, payloadLen); err != nil {
+		if err := discardExact(reader, payloadLen); err != nil {
 			return DirPage{}, fmt.Errorf("list dir page payload too large: %d (discard failed: %w)", payloadLen, err)
 		}
 		return DirPage{}, fmt.Errorf("list dir page payload too large: %d", payloadLen)
 	}
 	payload := make([]byte, payloadLen)
-	if err := readExact(b.port, payload); err != nil {
+	if err := reader.readExact(payload); err != nil {
 		return DirPage{}, err
 	}
 	if len(payload) < 4 {
@@ -891,8 +908,9 @@ func (b *Board) listDirLegacyLocked(path string) ([]FileEntry, error) {
 		return nil, err
 	}
 
+	reader := newFrameAssembler(b.port)
 	header := make([]byte, 12)
-	if err := readExact(b.port, header); err != nil {
+	if err := reader.readExact(header); err != nil {
 		return nil, err
 	}
 	errCode := binary.LittleEndian.Uint32(header[0:4])
@@ -900,7 +918,7 @@ func (b *Board) listDirLegacyLocked(path string) ([]FileEntry, error) {
 	count := binary.LittleEndian.Uint32(header[8:12])
 	if errCode != 0 && errCode != 1024 {
 		if payloadLen > 0 {
-			if err := discardExact(b.port, payloadLen); err != nil {
+			if err := discardExact(reader, payloadLen); err != nil {
 				return nil, fmt.Errorf("legacy list dir error payload discard failed: %w", err)
 			}
 		}
@@ -910,13 +928,13 @@ func (b *Board) listDirLegacyLocked(path string) ([]FileEntry, error) {
 		return []FileEntry{}, nil
 	}
 	if payloadLen > maxLegacyDirPayload {
-		if err := discardExact(b.port, payloadLen); err != nil {
+		if err := discardExact(reader, payloadLen); err != nil {
 			return nil, fmt.Errorf("legacy list dir payload too large: %d (discard failed: %w)", payloadLen, err)
 		}
 		return nil, fmt.Errorf("legacy list dir payload too large: %d", payloadLen)
 	}
 	payload := make([]byte, payloadLen)
-	if err := readExact(b.port, payload); err != nil {
+	if err := reader.readExact(payload); err != nil {
 		return nil, err
 	}
 	entries, err := parseListDirEntries(payload, count)
@@ -971,22 +989,21 @@ func (b *Board) readFileResponse(payload []byte) ([]byte, error) {
 	if err := b.writeCommandLocked(CmdReadFile, uint32(len(payload)), payload); err != nil {
 		return nil, err
 	}
+	reader := newFrameAssembler(b.port)
 	header := make([]byte, 12)
-	if err := readExact(b.port, header); err != nil {
+	if err := reader.readExact(header); err != nil {
 		return nil, err
 	}
 	dataLen := binary.LittleEndian.Uint32(header[4:8])
 	if dataLen == 0 {
 		return header, nil
 	}
-	if dataLen > maxFileChunk {
-		if err := discardExact(b.port, dataLen); err != nil {
-			return nil, fmt.Errorf("read file payload too large: %d (discard failed: %w)", dataLen, err)
-		}
-		return nil, fmt.Errorf("read file payload too large: %d", dataLen)
+	requestedLen := binary.LittleEndian.Uint32(payload[4:8])
+	if dataLen > maxFileChunk || dataLen > requestedLen {
+		return nil, fmt.Errorf("invalid read file payload length: got %d, requested %d", dataLen, requestedLen)
 	}
 	data := make([]byte, dataLen)
-	if err := readExact(b.port, data); err != nil {
+	if err := reader.readExact(data); err != nil {
 		return nil, err
 	}
 	return append(header, data...), nil
@@ -1064,24 +1081,69 @@ func writeFull(port serial.Port, data []byte) error {
 	return nil
 }
 
-func readExact(port serial.Port, data []byte) error {
+type serialReceiver struct {
+	port   serial.Port
+	buffer [serialReceiveChunk]byte
+	start  int
+	end    int
+}
+
+// read pulls one bounded transport chunk. Protocol frame sizes must not
+// determine the size of a Windows CDC receive operation.
+func (r *serialReceiver) read(data []byte) (int, error) {
+	if r.start == r.end {
+		n, err := r.port.Read(r.buffer[:])
+		if n <= 0 {
+			return n, err
+		}
+		r.start = 0
+		r.end = n
+	}
+
+	n := copy(data, r.buffer[r.start:r.end])
+	r.start += n
+	return n, nil
+}
+
+// frameAssembler consumes transport chunks until each protocol field is complete.
+// Its idle deadline spans the header and payload of one response frame.
+type frameAssembler struct {
+	receiver     *serialReceiver
+	lastProgress time.Time
+}
+
+func newFrameAssembler(port serial.Port) *frameAssembler {
+	return &frameAssembler{receiver: &serialReceiver{port: port}, lastProgress: time.Now()}
+}
+
+func (r *frameAssembler) readExact(data []byte) error {
 	offset := 0
 	for offset < len(data) {
-		n, err := port.Read(data[offset:])
+		n, err := r.receiver.read(data[offset:])
+		if n > 0 {
+			offset += n
+			r.lastProgress = time.Now()
+		}
 		if err != nil {
 			return err
 		}
 		if n == 0 {
-			return fmt.Errorf("short read: got %d of %d bytes", offset, len(data))
+			if time.Since(r.lastProgress) >= frameContinuationTimeout {
+				return fmt.Errorf("short read: got %d of %d bytes", offset, len(data))
+			}
+			time.Sleep(receiveRetryDelay)
 		}
-		offset += n
 	}
 	return nil
 }
 
+func readExact(port serial.Port, data []byte) error {
+	return newFrameAssembler(port).readExact(data)
+}
+
 // discardExact preserves command framing after rejecting a response that is
 // larger than its negotiated bound without allocating that whole response.
-func discardExact(port serial.Port, length uint32) error {
+func discardExact(reader *frameAssembler, length uint32) error {
 	const scratchSize = 32 * 1024
 	buf := make([]byte, scratchSize)
 	for length > 0 {
@@ -1089,7 +1151,7 @@ func discardExact(port serial.Port, length uint32) error {
 		if length < uint32(chunkLen) {
 			chunkLen = int(length)
 		}
-		if err := readExact(port, buf[:chunkLen]); err != nil {
+		if err := reader.readExact(buf[:chunkLen]); err != nil {
 			return err
 		}
 		length -= uint32(chunkLen)
