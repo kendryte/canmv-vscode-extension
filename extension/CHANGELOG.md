@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.4
+
+- Improved large-file upload reliability by retrying transient zero-byte serial writes before treating the transport as stalled
+- Fixed connection-state reporting after an unrecoverable file-upload transport failure so VS Code receives a board-disconnected event
+- Expanded serial-write tests to cover temporary zero-byte writes
+
 ## 0.9.3
 
 - Added reliable streamed file uploads with 8 KiB write chunks for compatibility with legacy CanMV CDC receive buffers
