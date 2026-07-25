@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.5
+
+- Improved Windows large-file downloads by separating bounded USB CDC receives from protocol frame assembly
+- Added idle-aware continuation reads so split file payloads and synchronization markers survive transient empty serial reads
+- Added automatic stream resynchronization and one-time retry for malformed or incomplete file-read responses
+- Rejected invalid file payload lengths without draining untrusted frame sizes, preventing stale data from corrupting later commands
+- Expanded USB debug tests for split payloads, final-byte delivery, malformed-frame recovery, and transient synchronization gaps
+
 ## 0.9.4
 
 - Improved large-file upload reliability by retrying transient zero-byte serial writes before treating the transport as stalled
