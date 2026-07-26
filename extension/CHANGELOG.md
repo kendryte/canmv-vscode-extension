@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.6
+
+- Added capability-negotiated recursive remote directory deletion across the explorer, filesystem provider, MCP server, Go backend, and K230 firmware
+- Added the `RMDIR_RECURSIVE` USB debug command and `rmdirRecursive` capability while retaining ordinary empty-directory removal for backward compatibility
+- Added protected-root checks and depth-first directory removal in firmware, without following symlinks
+- Improved deletion errors so older firmware clearly reports when recursive folder deletion requires a firmware update
+
 ## 0.9.5
 
 - Improved Windows large-file downloads by separating bounded USB CDC receives from protocol frame assembly
