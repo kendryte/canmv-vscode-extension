@@ -1678,7 +1678,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (confirmed !== deleteAction) return;
       try {
         const ok = item.fileType === 'directory'
-          ? await fileService.rmdir(item.absPath)
+          ? await fileService.rmdir(item.absPath, true)
           : await fileService.deleteFile(item.absPath);
         if (!ok) throw new Error(t('backend rejected the request'));
         refreshExplorer();

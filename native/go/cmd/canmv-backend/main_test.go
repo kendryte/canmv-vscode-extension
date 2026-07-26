@@ -92,6 +92,7 @@ func TestFilesystemRequestsRejectDuringStreamedWrite(t *testing.T) {
 		{"read", func() (interface{}, int, string) { return s.readFile(nil) }},
 		{"legacy write", func() (interface{}, int, string) { return s.writeFile(nil) }},
 		{"delete", func() (interface{}, int, string) { return s.simpleFileOp(nil, usbdbg.CmdDeleteFile, "path") }},
+		{"rmdir", func() (interface{}, int, string) { return s.rmdir(nil) }},
 		{"rename", func() (interface{}, int, string) { return s.renameFile(nil) }},
 	}
 

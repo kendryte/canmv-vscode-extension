@@ -224,11 +224,11 @@ export const Methods = {
     result: {} as { success: boolean; errorCode?: number },
     errors: { 4006: 'Create directory error' },
   },
-  /** Remove a directory on the board. */
+  /** Remove a directory on the board, optionally including its contents. */
   ioRmdir: {
     method: 'io.rmdir' as const,
-    params: {} as { path: string },
-    result: {} as { success: boolean; errorCode?: number },
+    params: {} as { path: string; recursive?: boolean },
+    result: {} as { success: boolean; errorCode?: number; message?: string },
     errors: { 4007: 'Remove directory error' },
   },
   /** Get board firmware git commit hash (for stub version matching). */

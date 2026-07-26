@@ -38,7 +38,7 @@ const (
 	CmdQueryFileStat = 0xA0
 
 	// Capability protocol v2 extensions. Keep this range contiguous; append
-	// new extension-only commands after CmdVTouchEvent.
+	// new extension-only commands after CmdRmdirRecursive.
 	CmdCapabilities   = 0xA2
 	CmdFWVersionFull  = 0xA3
 	CmdScriptStatus   = 0xA4
@@ -54,6 +54,7 @@ const (
 	CmdFileExec       = 0xAE
 	CmdVTouchStatus   = 0xAF
 	CmdVTouchEvent    = 0xB0
+	CmdRmdirRecursive = 0xB1
 
 	CapListDir      = 1 << 0
 	CapReadFile     = 1 << 1
@@ -66,7 +67,8 @@ const (
 	CapVirtualTouch = 1 << 8
 	CapReplInput    = 1 << 9
 	CapListDirPaged = 1 << 10
-	CapKnownMask    = CapListDir | CapReadFile | CapWriteFile | CapDeleteFile | CapRenameFile | CapMkdir | CapRmdir | CapFileExec | CapVirtualTouch | CapReplInput | CapListDirPaged
+	CapRmdirRecursive = 1 << 11
+	CapKnownMask       = CapListDir | CapReadFile | CapWriteFile | CapDeleteFile | CapRenameFile | CapMkdir | CapRmdir | CapFileExec | CapVirtualTouch | CapReplInput | CapListDirPaged | CapRmdirRecursive
 
 	capProtocolVersion = 2
 

@@ -212,7 +212,7 @@ func (s *server) handle(method string, params map[string]interface{}) (interface
 	case "io.mkdir":
 		return s.simpleFileOp(params, usbdbg.CmdMkdir, "path")
 	case "io.rmdir":
-		return s.simpleFileOp(params, usbdbg.CmdRmdir, "path")
+		return s.rmdir(params)
 	default:
 		return nil, 9002, "method not implemented in Go backend fork: " + method
 	}
@@ -836,6 +836,44 @@ func (s *server) simpleFileOp(params map[string]interface{}, opcode byte, key st
 		return rejectProtectedPath(), 0, ""
 	}
 	errCode := s.currentProtocol().SimpleFileOp(board, opcode, append([]byte(path), 0))
+	return fileOpResult(errCode), 0, ""
+}
+
+func (s *server) rmdir(params map[string]interface{}) (interface{}, int, string) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	if s.fileWrite != nil {
+		return nil, 4003, "file transfer in progress"
+	}
+
+	board := s.currentBoard()
+	if board == nil {
+		return map[string]interface{}{"success": false, "errorCode": invalidPathErr}, 0, ""
+	}
+	path := stringParam(params, "path", "")
+	if !isWritablePath(path) {
+		return rejectProtectedPath(), 0, ""
+	}
+	recursive, _ := params["recursive"].(bool)
+	opcode := byte(usbdbg.CmdRmdir)
+	capability := uint32(usbdbg.CapRmdir)
+	recursiveFallback := false
+	if recursive && s.hasCapability(usbdbg.CapRmdirRecursive) {
+		opcode = usbdbg.CmdRmdirRecursive
+		capability = usbdbg.CapRmdirRecursive
+	} else if recursive {
+		recursiveFallback = true
+	}
+	if !s.hasCapability(capability) {
+		return unsupportedFileOpResult("Remove directory is not supported by this firmware"), 0, ""
+	}
+	errCode := s.currentProtocol().SimpleFileOp(board, opcode, append([]byte(path), 0))
+	if recursiveFallback && errCode == dirNotEmptyErr {
+		return map[string]interface{}{
+			"success": false, "errorCode": errCode,
+			"message": "Recursive directory removal requires a firmware update",
+		}, 0, ""
+	}
 	return fileOpResult(errCode), 0, ""
 }
 
@@ -1762,7 +1800,10 @@ func errorString(err error) string {
 	return err.Error()
 }
 
-const invalidPathErr = 1024 + 11
+const (
+	invalidPathErr = 1024 + 11
+	dirNotEmptyErr = 1024 + 12
+)
 
 var writableRoots = map[string]bool{
 	"sdcard": true,

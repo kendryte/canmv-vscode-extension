@@ -515,18 +515,18 @@ func TestListDirLegacyOversizeIsDrained(t *testing.T) {
 	}
 }
 
-func TestCapabilitiesAcceptsPagedListCapability(t *testing.T) {
+func TestCapabilitiesAcceptsExtensionCapabilities(t *testing.T) {
 	response := make([]byte, 8)
 	binary.LittleEndian.PutUint32(response[0:4], capProtocolVersion)
-	binary.LittleEndian.PutUint32(response[4:8], CapListDir|CapListDirPaged|(1<<31))
+	binary.LittleEndian.PutUint32(response[4:8], CapListDir|CapListDirPaged|CapRmdirRecursive|(1<<31))
 	board := &Board{port: &mockPort{reads: [][]byte{response}}}
 
 	version, flags, err := board.Capabilities()
 	if err != nil {
 		t.Fatalf("Capabilities() error: %v", err)
 	}
-	if version != capProtocolVersion || flags&CapListDirPaged == 0 {
-		t.Fatalf("Capabilities() = version %d flags %#x, want paged list capability", version, flags)
+	if version != capProtocolVersion || flags&CapListDirPaged == 0 || flags&CapRmdirRecursive == 0 {
+		t.Fatalf("Capabilities() = version %d flags %#x, want paged-list and recursive-rmdir capabilities", version, flags)
 	}
 	if flags&(1<<31) != 0 {
 		t.Fatalf("Capabilities() retained an unknown flag: %#x", flags)

@@ -510,11 +510,12 @@ class CanmvMcpServer {
     {
       name: 'canmv_rmdir',
       title: 'Remove Remote Directory',
-      description: 'Remove an empty directory on the connected board.',
+      description: 'Remove a directory on the connected board, optionally including its contents.',
       inputSchema: objectSchema({
         path: { type: 'string', description: 'Remote directory path.' },
+        recursive: { type: 'boolean', description: 'Delete all directory contents recursively.' },
       }, ['path']),
-      handler: async (args) => this.requestResult(Methods.ioRmdir, { path: requiredString(args.path, 'path') }),
+      handler: async (args) => this.requestResult(Methods.ioRmdir, { path: requiredString(args.path, 'path'), recursive: args.recursive === true }),
     },
   ];
 

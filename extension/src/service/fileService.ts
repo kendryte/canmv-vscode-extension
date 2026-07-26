@@ -34,6 +34,7 @@ interface CachedFile {
 }
 
 interface FileMutationResult {
+  message?: string;
   success: boolean;
   errorCode?: number;
 }
@@ -480,17 +481,20 @@ export class FileService {
     logDebug('Files', 'Cleared file read cache');
   }
 
-  async rmdir(path: string): Promise<boolean> {
+  async rmdir(path: string, recursive = false): Promise<boolean> {
     return this.runFileOperation(async () => {
-      const req = createRequest(Methods.ioRmdir, { path });
+      const req = createRequest(Methods.ioRmdir, { path, recursive });
       const result = await this.requester.request(req);
       if (isResponse(result)) {
-        const success = mutationSucceeded(result.result);
+        const payload = result.result as FileMutationResult;
+        const success = mutationSucceeded(payload);
         if (success) {
           this.invalidateCache(path, true);
           logInfo('Files', `Deleted folder: ${path}`);
         } else {
-          logWarn('Files', `Delete folder rejected: ${path}`);
+          const message = payload.message || `Device error ${payload.errorCode ?? 'unknown'}`;
+          logWarn('Files', `Delete folder rejected: ${path}: ${message}`);
+          throw new Error(message);
         }
         return success;
       }

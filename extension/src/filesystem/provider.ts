@@ -130,7 +130,7 @@ export class CanmvFileSystemProvider implements vscode.FileSystemProvider {
       }
     }
     const ok = stat.type === vscode.FileType.Directory
-      ? await this.fileService.rmdir(uri.path)
+      ? await this.fileService.rmdir(uri.path, options.recursive)
       : await this.fileService.deleteFile(uri.path);
     if (!ok) {
       throw vscode.FileSystemError.Unavailable(t('Delete failed'));
