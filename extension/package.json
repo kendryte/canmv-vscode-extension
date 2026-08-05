@@ -37,7 +37,9 @@
     "ms-python.vscode-pylance"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onMcpServerDefinitionProvider:canmv.mcp",
+    "onCommand:canmv.configureMcpClients",
     "onCommand:canmv.connectBoard",
     "onCommand:canmv.disconnectBoard",
     "onCommand:canmv.runCurrentScript",
@@ -65,6 +67,11 @@
   "l10n": "./l10n",
   "contributes": {
     "commands": [
+      {
+        "command": "canmv.configureMcpClients",
+        "title": "%canmv.command.configureMcpClients%",
+        "icon": "$(tools)"
+      },
       {
         "command": "canmv.connectBoard",
         "title": "%canmv.command.connectBoard%",
@@ -431,6 +438,11 @@
           "type": "boolean",
           "default": true,
           "description": "%canmv.configuration.stubsAutoDownload.description%"
+        },
+        "canmv.mcp.autoConfigureClients": {
+          "type": "boolean",
+          "default": true,
+          "description": "%canmv.configuration.mcp.autoConfigureClients.description%"
         }
       }
     },

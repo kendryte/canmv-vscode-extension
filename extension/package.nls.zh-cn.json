@@ -24,6 +24,7 @@
   "canmv.command.refreshExamples": "CanMV: 刷新示例",
   "canmv.command.revealExamples": "CanMV: 在文件管理器中显示示例",
   "canmv.command.openExampleFile": "CanMV: 打开示例文件",
+  "canmv.command.configureMcpClients": "CanMV: 为 Codex 和 Claude 配置 MCP",
   "canmv.view.controls": "控制",
   "canmv.view.toolbox": "工具箱",
   "canmv.view.device": "设备",
@@ -35,5 +36,6 @@
   "canmv.configuration.autoReconnect.description": "意外断开连接后自动重连",
   "canmv.configuration.autoMinifyStartupScripts.description": "上传前压缩 /sdcard/main.py 和 /sdcard/boot.py",
   "canmv.configuration.stubsAutoDownload.description": "连接开发板时自动下载 K230 代码提示文件和示例",
+  "canmv.configuration.mcp.autoConfigureClients.description": "自动向已安装的 Codex 和 Claude Code 客户端注册 CanMV MCP 服务器。",
   "canmv.mcp.provider.label": "CanMV MCP 服务器"
 }

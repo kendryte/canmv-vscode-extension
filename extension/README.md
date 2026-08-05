@@ -128,11 +128,11 @@ The CanMV Terminal panel keeps recent scrollback, mirrors board/script output, a
 
 ### Use MCP Tools
 
-The extension contributes a `CanMV MCP Server` definition to VS Code. Compatible MCP clients can discover tools for capability analysis, board detection/connection, script execution, preview frames, virtual touch, terminal input/output, remote filesystem operations, host-side artifact saving, and read-only access to cached CanMV examples and MicroPython stubs.
+The extension contributes a `CanMV MCP Server` definition to VS Code for GitHub Copilot and automatically registers the same server with installed Codex and Claude Code clients. Restart an active agent session after the first registration so it reloads its MCP tools. Disable `canmv.mcp.autoConfigureClients` to opt out, or run `CanMV: Configure MCP for Codex and Claude` to refresh the registrations manually.
 
-The MCP server runs as a standalone stdio Node process and always uses the bundled backend. It receives `canmv.baudRate` from the extension; MCP clients may also pass an explicit serial port to `canmv_connect_board`. Example and stub tools read the local caches under `~/.kendryte/k230_canmv_examples` and `~/.kendryte/k230_canmv_stubs`, so refresh/connect once if those caches are empty.
+The MCP server runs as a stdio Node process. While the extension is active, an authenticated local bridge routes board operations through the extension's existing backend and session. Connections, disconnections, script state, terminal output, preview state, and device browsing therefore stay synchronized across the CanMV UI and MCP tools. When the bridge is unavailable, an externally launched MCP server falls back to the bundled standalone backend. The server receives `canmv.baudRate` from the extension; MCP clients may also pass an explicit serial port to `canmv_connect_board`.
 
-Board-facing MCP tools auto-connect when hardware access is needed and keep the board session alive for related follow-up calls, such as running a script, starting preview, and reading a frame. The server disconnects on `canmv_disconnect_board`, when the MCP client exits, or after an idle timeout. Set `CANMV_MCP_IDLE_DISCONNECT_MS` to adjust the timeout; the default is 120000 milliseconds.
+Board-facing MCP tools auto-connect when hardware access is needed and keep the board session alive for related follow-up calls, such as running a script, starting preview, and reading a frame. Shared extension sessions disconnect on `canmv_disconnect_board` or the normal CanMV UI command, not merely because an agent process exits. Standalone sessions also disconnect when the MCP client exits or after an idle timeout. Set `CANMV_MCP_IDLE_DISCONNECT_MS` to adjust the standalone timeout; the default is 120000 milliseconds.
 
 When an AI workflow needs to save an image or downloaded artifact on the host, prefer the host-save tools instead of asking the MCP client to decode base64 text. `canmv_save_latest_frame_to_host` saves the current preview JPEG directly, `canmv_download_file_to_host` copies a remote board file to the host, and `canmv_save_base64_to_host` decodes base64 data returned by another tool. Relative output paths are written under `CANMV_MCP_OUTPUT_DIR` when set, or a temporary `canmv-mcp` output directory by default.
 
@@ -161,6 +161,7 @@ For best script generation, the MCP server instructs AI clients to call `canmv_r
 | --- | --- |
 | `CanMV: Connect Board` | Connect to a CanMV K230 board. |
 | `CanMV: Disconnect Board` | Disconnect from the current board. |
+| `CanMV: Configure MCP for Codex and Claude` | Register or refresh the CanMV MCP server in installed Codex and Claude Code clients. |
 | `CanMV: Run Active Python Script` | Run the active Python editor on the board. |
 | `CanMV: Stop Script` | Stop the running script. |
 | `CanMV: Enable Preview` | Enable/open live frame preview. |
@@ -192,6 +193,7 @@ For best script generation, the MCP server instructs AI clients to call `canmv_r
 | `canmv.autoReconnect` | `true` | Automatically reconnect after an unexpected disconnect. |
 | `canmv.autoMinifyStartupScripts` | `true` | Minify `/sdcard/main.py` and `/sdcard/boot.py` before upload. |
 | `canmv.stubsAutoDownload` | `true` | Automatically download K230 MicroPython stubs and examples when needed. |
+| `canmv.mcp.autoConfigureClients` | `true` | Automatically register the CanMV MCP server with installed Codex and Claude Code clients. |
 
 ## Firmware Resources, Examples, and Python Stubs
 

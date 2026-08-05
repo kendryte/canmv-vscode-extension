@@ -128,11 +128,11 @@ CanMV 终端面板保留最近的滚动历史，同步显示开发板/脚本输�
 
 ### 使用 MCP 工具
 
-该扩展向 VS Code 提供了一个 `CanMV MCP Server` 定义。兼容的 MCP 客户端可以发现用于能力分析、开发板检测/连接、脚本执行、预览帧、虚拟触控、终端输入/输出、远程文件系统操作、主机端文件保存以及对缓存的 CanMV 示例和 MicroPython stubs 的只读访问等工具。
+该扩展为 GitHub Copilot 向 VS Code 提供 `CanMV MCP Server` 定义，并自动向已安装的 Codex 和 Claude Code 客户端注册同一个服务器。首次注册后请重启正在运行的代理会话，使其重新加载 MCP 工具。可关闭 `canmv.mcp.autoConfigureClients` 以禁用自动注册，也可运行 `CanMV: 为 Codex 和 Claude 配置 MCP` 手动刷新注册。
 
-MCP 服务器作为独立的 stdio Node 进程运行，始终使用扩展内置的后端。它从扩展接收 `canmv.baudRate` 设置；MCP 客户端也可以向 `canmv_connect_board` 传入明确的串口路径。示例和 stubs 工具读取 `~/.kendryte/k230_canmv_examples` 和 `~/.kendryte/k230_canmv_stubs` 下的本地缓存，因此如果这些缓存为空，请先刷新或连接一次。
+MCP 服务器作为 stdio Node 进程运行。扩展处于活动状态时，经过认证的本地桥接会通过扩展现有的后端和会话执行开发板操作，因此 CanMV UI 与 MCP 工具之间的连接、断开、脚本状态、终端输出、预览状态和设备浏览保持同步。桥接不可用时，从外部启动的 MCP 服务器会回退到内置的独立后端。服务器从扩展接收 `canmv.baudRate` 设置；MCP 客户端也可以向 `canmv_connect_board` 传入明确的串口路径。
 
-面向开发板的 MCP 工具在需要硬件访问时会自动连接，并为相关的后续调用（如运行脚本、启动预览和读取帧）保持开发板会话。服务器在调用 `canmv_disconnect_board`、MCP 客户端退出或空闲超时后断开连接。设置 `CANMV_MCP_IDLE_DISCONNECT_MS` 可调整超时时间，默认为 120000 毫秒。
+面向开发板的 MCP 工具在需要硬件访问时会自动连接，并为相关的后续调用（如运行脚本、启动预览和读取帧）保持开发板会话。共享的扩展会话仅在调用 `canmv_disconnect_board` 或使用 CanMV UI 断开命令时断开，不会仅因代理进程退出而断开。独立会话还会在 MCP 客户端退出或空闲超时后断开。设置 `CANMV_MCP_IDLE_DISCONNECT_MS` 可调整独立模式的空闲超时时间，默认为 120000 毫秒。
 
 当 AI 工作流需要在主机上保存图像或下载的文件时，建议使用主机保存工具，而不是要求 MCP 客户端解码 base64 文本。`canmv_save_latest_frame_to_host` 直接保存当前预览 JPEG，`canmv_download_file_to_host` 将远程开发板文件复制到主机，`canmv_save_base64_to_host` 解码另一个工具返回的 base64 数据。相对输出路径在设置了 `CANMV_MCP_OUTPUT_DIR` 时写入该目录，否则默认写入临时的 `canmv-mcp` 输出目录。
 
@@ -161,6 +161,7 @@ MCP 功能包括：
 | --- | --- |
 | `CanMV: Connect Board` | 连接 CanMV K230 开发板。 |
 | `CanMV: Disconnect Board` | 断开当前开发板连接。 |
+| `CanMV: Configure MCP for Codex and Claude` | 在已安装的 Codex 和 Claude Code 客户端中注册或刷新 CanMV MCP 服务器。 |
 | `CanMV: Run Active Python Script` | 在开发板上运行当前 Python 编辑器中的脚本。 |
 | `CanMV: Stop Script` | 停止正在运行的脚本。 |
 | `CanMV: Enable Preview` | 启用/打开实时帧预览。 |
@@ -192,6 +193,7 @@ MCP 功能包括：
 | `canmv.autoReconnect` | `true` | 意外断开后自动重新连接。 |
 | `canmv.autoMinifyStartupScripts` | `true` | 上传前压缩 `/sdcard/main.py` 和 `/sdcard/boot.py`。 |
 | `canmv.stubsAutoDownload` | `true` | 需要时自动下载 K230 MicroPython stubs 和示例。 |
+| `canmv.mcp.autoConfigureClients` | `true` | 自动向已安装的 Codex 和 Claude Code 客户端注册 CanMV MCP 服务器。 |
 
 ## 固件资源、示例和 Python Stubs
 

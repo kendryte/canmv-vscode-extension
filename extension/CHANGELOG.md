@@ -2,6 +2,8 @@
 
 ## 0.9.6
 
+- Added automatic user-scope MCP registration for installed Codex and Claude Code clients, with an opt-out setting and manual refresh command
+- Routed MCP board operations through an authenticated local extension bridge so connection, script, terminal, preview, and explorer state stay synchronized with the CanMV UI
 - Added capability-negotiated recursive remote directory deletion across the explorer, filesystem provider, MCP server, Go backend, and K230 firmware
 - Added the `RMDIR_RECURSIVE` USB debug command and `rmdirRecursive` capability while retaining ordinary empty-directory removal for backward compatibility
 - Added protected-root checks and depth-first directory removal in firmware, without following symlinks

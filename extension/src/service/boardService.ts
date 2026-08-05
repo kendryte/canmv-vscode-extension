@@ -17,6 +17,14 @@ export interface BoardInfo {
   protocolVersion?: number;
   capabilities?: Record<string, unknown>;
   port?: string;
+  repl?: string;
+}
+
+export interface ConnectBoardOptions {
+  port?: string;
+  baudRate?: number;
+  interactive?: boolean;
+  notify?: boolean;
 }
 
 export class BoardService {
@@ -27,45 +35,51 @@ export class BoardService {
     private detector: BoardDetector,
   ) {}
 
-  async connectBoard(): Promise<string | null> {
+  async connectBoard(options: ConnectBoardOptions = {}): Promise<string | null> {
     const config = vscode.workspace.getConfiguration('canmv');
-    const baudRate = config.get<number>('baudRate', 12000000);
+    const baudRate = options.baudRate ?? config.get<number>('baudRate', 12000000);
+    const interactive = options.interactive !== false;
+    const notify = options.notify !== false;
 
-    let port: string;
+    let port = options.port || '';
 
     try {
       await this.session.connect('__detect__', baudRate);
-      const boards = await this.detector.scan();
-      logInfo('Board', `Auto-detected ${boards.length} CanMV device${boards.length === 1 ? '' : 's'}`);
-      if (boards.length === 0) {
-        await this.session.disconnect();
-        vscode.window.showErrorMessage(
-          t('CanMV: No CanMV device detected. Connect the board via USB and try again.')
-        );
-        return null;
-      }
-      if (boards.length === 1) {
-        port = boards[0].port;
-        logInfo('Board', `Selected device: ${port} (${boards[0].name})`);
-      } else {
-        const selected = await vscode.window.showQuickPick(
-          boards.map(b => ({
-            label: b.port,
-            description: b.name,
-            detail: [
-              b.vid && b.pid ? 'USB ' + b.vid + ':' + b.pid : undefined,
-              b.serialNumber ? t('Serial {serialNumber}', { serialNumber: b.serialNumber }) : undefined,
-              b.description,
-            ].filter(Boolean).join(' | '),
-          })),
-          { placeHolder: t('Select CanMV device') }
-        );
-        if (!selected) {
+      if (!port) {
+        const boards = await this.detector.scan();
+        logInfo('Board', `Auto-detected ${boards.length} CanMV device${boards.length === 1 ? '' : 's'}`);
+        if (boards.length === 0) {
           await this.session.disconnect();
+          if (notify) {
+            vscode.window.showErrorMessage(
+              t('CanMV: No CanMV device detected. Connect the board via USB and try again.')
+            );
+          }
           return null;
         }
-        port = selected.label;
-        logInfo('Board', `Selected device: ${port}`);
+        if (boards.length === 1 || !interactive) {
+          port = boards[0].port;
+          logInfo('Board', `Selected device: ${port} (${boards[0].name})`);
+        } else {
+          const selected = await vscode.window.showQuickPick(
+            boards.map(b => ({
+              label: b.port,
+              description: b.name,
+              detail: [
+                b.vid && b.pid ? 'USB ' + b.vid + ':' + b.pid : undefined,
+                b.serialNumber ? t('Serial {serialNumber}', { serialNumber: b.serialNumber }) : undefined,
+                b.description,
+              ].filter(Boolean).join(' | '),
+            })),
+            { placeHolder: t('Select CanMV device') }
+          );
+          if (!selected) {
+            await this.session.disconnect();
+            return null;
+          }
+          port = selected.label;
+          logInfo('Board', `Selected device: ${port}`);
+        }
       }
 
       const req = createRequest(Methods.connectBoard, { port, baudRate });
@@ -84,20 +98,22 @@ export class BoardService {
         if (info.repl) {
           logBlock('REPL', 'Boot output', redactFirmwareRevision(info.repl), 80);
         }
-        vscode.window.showInformationMessage(
-          t('CanMV: Connected - {boardType} (FW {firmwareVersion})', { boardType: info.boardType, firmwareVersion: info.fwVersion })
-        );
+        if (notify) {
+          vscode.window.showInformationMessage(
+            t('CanMV: Connected - {boardType} (FW {firmwareVersion})', { boardType: info.boardType, firmwareVersion: info.fwVersion })
+          );
+        }
         return info.repl || null;
       } else {
         const err = result as ProtocolError;
         logError('Board', `Connect failed: ${err.error.message}`);
-        vscode.window.showErrorMessage(t('CanMV: {message}', { message: err.error.message }));
+        if (notify) vscode.window.showErrorMessage(t('CanMV: {message}', { message: err.error.message }));
         await this.session.disconnect();
         return null;
       }
     } catch (err) {
       logError('Board', `Connect failed: ${err instanceof Error ? err.message : String(err)}`);
-      vscode.window.showErrorMessage(t('CanMV: Failed to connect - {message}', { message: String(err) }));
+      if (notify) vscode.window.showErrorMessage(t('CanMV: Failed to connect - {message}', { message: String(err) }));
       await this.session.disconnect();
       return null;
     }

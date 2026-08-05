@@ -1,5 +1,6 @@
 import * as cp from 'child_process';
 import * as fs from 'fs';
+import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { JsonCodec, type WireMessage } from '../protocol/codec';
@@ -72,7 +73,7 @@ const DEFAULT_LIST_LIMIT = 200;
 const MAX_LIST_LIMIT = 1000;
 const DEFAULT_SEARCH_LIMIT = 30;
 const MAX_SEARCH_LIMIT = 100;
-const IDLE_DISCONNECT_MS = readNumberEnv('CANMV_MCP_IDLE_DISCONNECT_MS', 120000);
+const IDLE_DISCONNECT_MS = readNonnegativeNumberEnv('CANMV_MCP_IDLE_DISCONNECT_MS', 120000);
 const DEFAULT_HOST_OUTPUT_DIR = process.env.CANMV_MCP_OUTPUT_DIR || path.join(os.tmpdir(), 'canmv-mcp');
 
 class CanmvMcpServer {
@@ -80,6 +81,7 @@ class CanmvMcpServer {
   private backend = new CanmvBackend();
   private boardInfo: BoardInfo | undefined;
   private boardReady = false;
+  private scriptRunning = false;
   private terminalOutput: string[] = [];
   private terminalOutputBytes = 0;
   private readonly terminalOutputLimit = 128 * 1024;
@@ -562,6 +564,7 @@ class CanmvMcpServer {
     try {
       switch (method) {
         case 'initialize':
+          await this.backend.syncBridgeState();
           this.sendResult(id, {
             protocolVersion: PROTOCOL_VERSION,
             capabilities: { tools: {}, resources: {}, prompts: {} },
@@ -629,6 +632,14 @@ class CanmvMcpServer {
   }
 
   private async connectBoard(portArg?: string, baudRateArg?: number): Promise<unknown> {
+    if (this.boardInfo && (!portArg || !this.boardInfo.port || portArg === this.boardInfo.port)) {
+      return {
+        connected: true,
+        ready: this.boardReady,
+        board: summarizeBoardInfo(this.boardInfo, this.boardReady),
+        repl: '',
+      };
+    }
     let port = portArg || '';
     const baudRate = baudRateArg || DEFAULT_BAUD_RATE;
     if (!port) {
@@ -643,12 +654,20 @@ class CanmvMcpServer {
     }
 
     this.boardReady = false;
-    const info = await this.requestResult(Methods.connectBoard, { port, baudRate }, { autoConnect: false }) as BoardInfo;
+    const info = await this.requestResult(Methods.connectBoard, { port, baudRate }, { autoConnect: false }) as BoardInfo & {
+      mcpBridgeReady?: boolean;
+      mcpBridgeScriptRunning?: boolean;
+    };
     this.boardInfo = info;
-    if (!info.protocolVersion || info.protocolVersion <= 0) {
+    if (typeof info.mcpBridgeReady === 'boolean') {
+      this.boardReady = info.mcpBridgeReady;
+    } else if (!info.protocolVersion || info.protocolVersion <= 0) {
       this.boardReady = true;
     } else {
       await this.waitForBoardReady(BOARD_READY_TIMEOUT_MS);
+    }
+    if (typeof info.mcpBridgeScriptRunning === 'boolean') {
+      this.scriptRunning = info.mcpBridgeScriptRunning;
     }
     if (info.repl) {
       this.appendTerminal(info.repl);
@@ -887,19 +906,28 @@ class CanmvMcpServer {
   private async disconnectBoardSession(): Promise<void> {
     this.clearIdleDisconnect();
     try {
+      if (this.boardInfo) {
+        await this.requestResult(Methods.disconnectBoard, {}, { autoConnect: false });
+      }
+    } catch (err) {
+      logStderr(`Board disconnect request failed: ${errorMessage(err)}`);
+    }
+    try {
       await this.backend.close();
     } catch (err) {
       logStderr(`Disconnect failed: ${errorMessage(err)}`);
     } finally {
+      this.clearIdleDisconnect();
       this.boardInfo = undefined;
       this.boardReady = false;
+      this.scriptRunning = false;
       this.latestFrame = undefined;
     }
   }
 
   private scheduleIdleDisconnect(): void {
     this.clearIdleDisconnect();
-    if (IDLE_DISCONNECT_MS <= 0) {
+    if (IDLE_DISCONNECT_MS <= 0 || this.backend.isBridgeConnected()) {
       return;
     }
     this.idleDisconnectTimer = setTimeout(() => {
@@ -919,11 +947,25 @@ class CanmvMcpServer {
   private handleBackendEvent(event: Event<string>): void {
     if (event.event === 'scriptOutput') {
       this.appendTerminal(String((event.params as { text?: string }).text || ''));
+    } else if (event.event === 'scriptState') {
+      const state = (event.params as { state?: string }).state;
+      if (state === 'started') this.scriptRunning = true;
+      if (state === 'finished') this.scriptRunning = false;
     } else if (event.event === 'boardReady') {
       this.boardReady = true;
     } else if (event.event === 'boardDisconnected') {
       this.boardInfo = undefined;
       this.boardReady = false;
+      this.scriptRunning = false;
+    } else if (event.event === 'mcpBridgeSnapshot') {
+      const snapshot = event.params as {
+        board?: BoardInfo;
+        boardReady?: boolean;
+        scriptRunning?: boolean;
+      };
+      this.boardInfo = snapshot.board;
+      this.boardReady = snapshot.boardReady === true;
+      this.scriptRunning = snapshot.scriptRunning === true;
     }
   }
 
@@ -1003,6 +1045,13 @@ class CanmvMcpServer {
 
 class CanmvBackend {
   private child: cp.ChildProcess | undefined;
+  private bridgeSocket: net.Socket | undefined;
+  private bridgeBuffer = '';
+  private bridgeConnectPromise: Promise<void> | undefined;
+  private bridgeConnectResolve: (() => void) | undefined;
+  private bridgeConnectReject: ((err: Error) => void) | undefined;
+  private bridgeClosing = false;
+  private bridgeUnavailable = false;
   private isOpen = false;
   private codec = new JsonCodec();
   private pending = new Map<number, { resolve: (value: Response | ProtocolError) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -1027,6 +1076,21 @@ class CanmvBackend {
     this.frameListeners.push(listener);
   }
 
+  isBridgeConnected(): boolean {
+    return this.isOpen && !!this.bridgeSocket;
+  }
+
+  async syncBridgeState(): Promise<void> {
+    if (!process.env.CANMV_MCP_BRIDGE_ENDPOINT || !process.env.CANMV_MCP_BRIDGE_TOKEN) return;
+    try {
+      await this.openBridge();
+    } catch (err) {
+      this.bridgeUnavailable = true;
+      if (readBooleanEnv('CANMV_MCP_BRIDGE_REQUIRED', false)) throw err;
+      logStderr(`Extension bridge state unavailable: ${errorMessage(err)}`);
+    }
+  }
+
   async request(req: Request<string>, options: { timeoutMs?: number } = {}): Promise<Response | ProtocolError> {
     await this.open();
     return new Promise((resolve) => {
@@ -1036,6 +1100,15 @@ class CanmvBackend {
         resolve({ id: req.id, error: { code: 1002, message: `Request '${req.method}' timed out after ${timeoutMs}ms` } });
       }, timeoutMs);
       this.pending.set(req.id, { resolve, timer });
+      if (this.bridgeSocket?.writable) {
+        this.bridgeSocket.write(JSON.stringify({
+          type: 'request',
+          id: req.id,
+          method: req.method,
+          params: req.params,
+        }) + '\n');
+        return;
+      }
       const wire: WireMessage = this.codec.encodeRequest(req);
       const payload = Buffer.from(wire, 'utf8');
       const header = Buffer.alloc(7);
@@ -1055,6 +1128,21 @@ class CanmvBackend {
   }
 
   async close(): Promise<void> {
+    const bridgeSocket = this.bridgeSocket;
+    if (bridgeSocket) {
+      this.bridgeClosing = true;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => bridgeSocket.destroy(), 500);
+        timer.unref?.();
+        bridgeSocket.once('close', () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        bridgeSocket.end();
+      });
+      this.bridgeClosing = false;
+      return;
+    }
     const child = this.child;
     if (!child) return;
     this.child = undefined;
@@ -1063,15 +1151,24 @@ class CanmvBackend {
       child.kill('SIGTERM');
     }
     this.reader.reset();
-    for (const [id, pending] of this.pending) {
-      clearTimeout(pending.timer);
-      pending.resolve({ id, error: { code: 1004, message: 'Backend closed' } });
-    }
-    this.pending.clear();
+    this.resolvePending('Backend closed');
   }
 
   private async open(): Promise<void> {
     if (this.isOpen && this.child) return;
+    if (this.isOpen && this.bridgeSocket) return;
+    if (!this.bridgeUnavailable && process.env.CANMV_MCP_BRIDGE_ENDPOINT && process.env.CANMV_MCP_BRIDGE_TOKEN) {
+      try {
+        await this.openBridge();
+        return;
+      } catch (err) {
+        this.bridgeUnavailable = true;
+        logStderr(`Extension bridge unavailable; using standalone backend: ${errorMessage(err)}`);
+        if (readBooleanEnv('CANMV_MCP_BRIDGE_REQUIRED', false)) {
+          throw err;
+        }
+      }
+    }
     resetRequestId();
     const backend = resolveBackendCommand();
     logStderr(`Starting backend: ${backend.command}${backend.args.length ? ' ' + backend.args.join(' ') : ''}`);
@@ -1103,6 +1200,111 @@ class CanmvBackend {
       this.pending.clear();
       this.emitEvent({ event: 'boardDisconnected', params: {} });
     });
+  }
+
+  private openBridge(): Promise<void> {
+    if (this.bridgeConnectPromise) return this.bridgeConnectPromise;
+    const endpoint = process.env.CANMV_MCP_BRIDGE_ENDPOINT;
+    const token = process.env.CANMV_MCP_BRIDGE_TOKEN;
+    if (!endpoint || !token) return Promise.reject(new Error('MCP bridge is not configured'));
+
+    this.bridgeConnectPromise = new Promise<void>((resolve, reject) => {
+      const socket = net.createConnection(endpoint);
+      this.bridgeSocket = socket;
+      socket.setEncoding('utf8');
+      const timeout = setTimeout(() => {
+        this.rejectBridgeConnect(new Error('Timed out connecting to the CanMV extension bridge'));
+        socket.destroy();
+      }, 3000);
+      timeout.unref?.();
+      this.bridgeConnectResolve = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+      this.bridgeConnectReject = (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      };
+      socket.on('connect', () => {
+        socket.write(JSON.stringify({ type: 'hello', token }) + '\n');
+      });
+      socket.on('data', (chunk: string) => this.handleBridgeData(chunk));
+      socket.on('error', (err) => {
+        this.rejectBridgeConnect(err);
+        socket.destroy();
+      });
+      socket.on('close', () => {
+        const wasActive = this.isOpen && !this.bridgeClosing;
+        if (this.bridgeSocket === socket) {
+          this.bridgeSocket = undefined;
+          this.isOpen = false;
+          this.bridgeBuffer = '';
+        }
+        this.rejectBridgeConnect(new Error('CanMV extension bridge closed'));
+        this.resolvePending('CanMV extension bridge closed');
+        if (wasActive) this.emitEvent({ event: 'boardDisconnected', params: {} });
+      });
+    }).finally(() => {
+      this.bridgeConnectPromise = undefined;
+      this.bridgeConnectResolve = undefined;
+      this.bridgeConnectReject = undefined;
+    });
+    return this.bridgeConnectPromise;
+  }
+
+  private handleBridgeData(chunk: string): void {
+    this.bridgeBuffer += chunk;
+    for (;;) {
+      const newline = this.bridgeBuffer.indexOf('\n');
+      if (newline < 0) return;
+      const line = this.bridgeBuffer.slice(0, newline).trim();
+      this.bridgeBuffer = this.bridgeBuffer.slice(newline + 1);
+      if (!line) continue;
+      let message: Record<string, unknown>;
+      try {
+        message = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        this.bridgeSocket?.destroy(new Error('Invalid JSON from CanMV extension bridge'));
+        return;
+      }
+      if (message.type === 'hello') {
+        if (message.ok !== true) {
+          this.rejectBridgeConnect(new Error('CanMV extension bridge authentication failed'));
+          this.bridgeSocket?.destroy();
+          return;
+        }
+        this.isOpen = true;
+        this.bridgeConnectResolve?.();
+        const snapshot = asObject(message.snapshot);
+        this.emitEvent({ event: 'mcpBridgeSnapshot', params: snapshot });
+      } else if (message.type === 'response') {
+        this.handleMessage(message.response as BackendMessage);
+      } else if (message.type === 'event') {
+        const event = message.event as Event<string>;
+        if (event && typeof event.event === 'string') this.emitEvent(event);
+      } else if (message.type === 'frame') {
+        const dataBase64 = typeof message.dataBase64 === 'string' ? message.dataBase64 : '';
+        this.emitFrame({
+          frameId: typeof message.frameId === 'number' ? message.frameId : 0,
+          data: Buffer.from(dataBase64, 'base64'),
+          receivedAt: Date.now(),
+          chunkTs: typeof message.chunkTs === 'number' ? message.chunkTs : undefined,
+          dispatchTs: typeof message.dispatchTs === 'number' ? message.dispatchTs : undefined,
+        });
+      }
+    }
+  }
+
+  private rejectBridgeConnect(err: Error): void {
+    this.bridgeConnectReject?.(err);
+  }
+
+  private resolvePending(message: string): void {
+    for (const [id, pending] of this.pending) {
+      clearTimeout(pending.timer);
+      pending.resolve({ id, error: { code: 1004, message } });
+    }
+    this.pending.clear();
   }
 
   private handleMessage(message: BackendMessage): void {
@@ -1213,6 +1415,11 @@ function objectSchema(properties: Record<string, unknown>, required: string[] = 
 }
 
 function scriptWorkflowInstructions(): string {
+  const connectionLifetime = process.env.CANMV_MCP_BRIDGE_ENDPOINT
+    ? 'The shared extension board session disconnects only on explicit `canmv_disconnect_board` or from the CanMV UI; MCP client shutdown leaves it active.'
+    : IDLE_DISCONNECT_MS > 0
+      ? `The server disconnects on explicit \`canmv_disconnect_board\`, MCP client shutdown, or after ${IDLE_DISCONNECT_MS}ms of MCP board inactivity.`
+      : 'The server disconnects on explicit `canmv_disconnect_board` or MCP client shutdown.';
   return [
     'When generating, editing, saving, or running CanMV MicroPython scripts, first inspect the local CanMV context.',
     'Use `canmv_resource_summary` to see available cached examples and stubs.',
@@ -1221,7 +1428,7 @@ function scriptWorkflowInstructions(): string {
     'Only after grounding in examples/stubs should you call script-writing or execution tools such as `canmv_write_and_run_script`, `canmv_run_script`, `canmv_write_file`, `canmv_save_main_py`, or `canmv_save_boot_py`.',
     'For camera or vision scripts, prefer the `canmv_iterate_with_preview` prompt and use preview-frame tools while the MCP board session remains active.',
     'When the user asks to save an image or downloaded artifact to the host, use `canmv_save_latest_frame_to_host`, `canmv_download_file_to_host`, or `canmv_save_base64_to_host` instead of asking the client to decode base64 text.',
-    `Board-facing tools auto-connect when needed and keep the board session alive for related follow-up calls. The server disconnects on explicit \`canmv_disconnect_board\`, MCP client shutdown, or after ${IDLE_DISCONNECT_MS}ms of MCP board inactivity.`,
+    `Board-facing tools auto-connect when needed and keep the board session alive for related follow-up calls. ${connectionLifetime}`,
   ].join('\n');
 }
 
@@ -1720,6 +1927,11 @@ function boundedNumber(value: unknown, fallback: number, min: number, max: numbe
 function readNumberEnv(name: string, fallback: number): number {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function readNonnegativeNumberEnv(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
 function readBooleanEnv(name: string, fallback: boolean): boolean {

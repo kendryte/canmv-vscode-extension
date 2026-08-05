@@ -2,22 +2,69 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { logInfo, logWarn } from '../output';
+import { t } from '../i18n';
+import type { McpBridgeConnectionInfo } from './bridge';
+import { configureExternalMcpClients, type McpClientRegistrationResult } from './clientRegistration';
 
 export const CANMV_MCP_PROVIDER_ID = 'canmv.mcp';
 
-export function registerMcpSupport(context: vscode.ExtensionContext): void {
+export function registerMcpSupport(
+  context: vscode.ExtensionContext,
+  bridge?: McpBridgeConnectionInfo,
+): void {
+  const changed = new vscode.EventEmitter<void>();
+  const configSubscription = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration('canmv.baudRate') || event.affectsConfiguration('canmv.autoMinifyStartupScripts')) {
+      changed.fire();
+      if (bridge && shouldAutoConfigureExternalClients()) void configureClients(false);
+    }
+  });
+
+  let configurePromise: Promise<McpClientRegistrationResult> | undefined;
+  const configureClients = (showResult: boolean): Promise<McpClientRegistrationResult> => {
+    if (!bridge) return Promise.reject(new Error('CanMV MCP bridge is unavailable'));
+    if (!configurePromise) {
+      configurePromise = configureExternalMcpClients(context, bridge).finally(() => {
+        configurePromise = undefined;
+      });
+    }
+    if (showResult) {
+      void configurePromise.then((result) => {
+        const names = [...result.configured, ...result.unchanged];
+        if (names.length > 0) {
+          vscode.window.showInformationMessage(t('CanMV: MCP configured for {clients}. Restart active agent sessions to refresh tools.', {
+            clients: names.join(', '),
+          }));
+        } else if (result.failed.length > 0) {
+          vscode.window.showErrorMessage(t('CanMV: MCP client configuration failed. See the CanMV output for details.'));
+        } else {
+          vscode.window.showWarningMessage(t('CanMV: No supported Codex or Claude Code client was found.'));
+        }
+      }, (err) => {
+        logWarn('MCP', `Client configuration failed: ${err instanceof Error ? err.message : String(err)}`);
+        vscode.window.showErrorMessage(t('CanMV: MCP client configuration failed. See the CanMV output for details.'));
+      });
+    }
+    return configurePromise;
+  };
+
+  context.subscriptions.push(
+    changed,
+    configSubscription,
+    vscode.commands.registerCommand('canmv.configureMcpClients', () => configureClients(true)),
+  );
+
+  if (bridge && shouldAutoConfigureExternalClients()) {
+    void configureClients(false).catch((err) => {
+      logWarn('MCP', `Automatic client configuration failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
   const registerProvider = vscode.lm?.registerMcpServerDefinitionProvider;
   if (typeof registerProvider !== 'function' || typeof vscode.McpStdioServerDefinition !== 'function') {
     logWarn('MCP', 'VS Code MCP server definition API is unavailable in this runtime');
     return;
   }
-
-  const changed = new vscode.EventEmitter<void>();
-  const configSubscription = vscode.workspace.onDidChangeConfiguration((event) => {
-    if (event.affectsConfiguration('canmv.baudRate') || event.affectsConfiguration('canmv.autoMinifyStartupScripts')) {
-      changed.fire();
-    }
-  });
 
   const provider: vscode.McpServerDefinitionProvider<vscode.McpStdioServerDefinition> = {
     onDidChangeMcpServerDefinitions: changed.event,
@@ -29,7 +76,7 @@ export function registerMcpSupport(context: vscode.ExtensionContext): void {
         'CanMV K230',
         process.execPath,
         [serverPath],
-        createMcpServerEnv(context),
+        createMcpServerEnv(context, bridge),
         version,
       );
       definition.cwd = vscode.Uri.file(context.extensionPath);
@@ -40,7 +87,7 @@ export function registerMcpSupport(context: vscode.ExtensionContext): void {
       if (!serverPath || !fs.existsSync(serverPath)) {
         throw new Error(`CanMV MCP server script not found: ${serverPath || '<missing>'}`);
       }
-      server.env = createMcpServerEnv(context);
+      server.env = createMcpServerEnv(context, bridge);
       server.cwd = vscode.Uri.file(context.extensionPath);
       return server;
     },
@@ -48,22 +95,33 @@ export function registerMcpSupport(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     registerProvider(CANMV_MCP_PROVIDER_ID, provider),
-    changed,
-    configSubscription,
   );
   logInfo('MCP', 'Registered CanMV MCP server definition provider');
 }
 
-function createMcpServerEnv(context: vscode.ExtensionContext): Record<string, string | number | null> {
+function createMcpServerEnv(
+  context: vscode.ExtensionContext,
+  bridge?: McpBridgeConnectionInfo,
+): Record<string, string | number | null> {
   const config = vscode.workspace.getConfiguration('canmv');
   const pkg = context.extension.packageJSON as { version?: string };
   const baudRate = config.get<number>('baudRate', 12000000);
   const autoMinifyStartupScripts = config.get<boolean>('autoMinifyStartupScripts', true);
 
-  return {
+  const env: Record<string, string | number | null> = {
     CANMV_EXTENSION_PATH: context.extensionPath,
     CANMV_EXTENSION_VERSION: pkg.version || 'unknown',
     CANMV_BAUD_RATE: Number.isFinite(baudRate) ? baudRate : 12000000,
     CANMV_AUTO_MINIFY_STARTUP_SCRIPTS: autoMinifyStartupScripts ? 'true' : 'false',
   };
+  if (bridge) {
+    env.CANMV_MCP_BRIDGE_ENDPOINT = bridge.endpoint;
+    env.CANMV_MCP_BRIDGE_TOKEN = bridge.token;
+    env.CANMV_MCP_BRIDGE_REQUIRED = 'true';
+  }
+  return env;
+}
+
+function shouldAutoConfigureExternalClients(): boolean {
+  return vscode.workspace.getConfiguration('canmv').get<boolean>('mcp.autoConfigureClients', true);
 }

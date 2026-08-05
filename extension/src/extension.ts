@@ -6,7 +6,7 @@ import { NativeBackend } from './backend/native';
 import { Session } from './session/session';
 import { PreviewPanel } from './webview/PreviewPanel';
 import { TerminalViewProvider } from './webview/TerminalViewProvider';
-import { BoardService, type BoardInfo } from './service/boardService';
+import { BoardService, type BoardInfo, type ConnectBoardOptions } from './service/boardService';
 import { ScriptService } from './service/scriptService';
 import { VideoService } from './service/videoService';
 import { FileService, type FileTransferProgress } from './service/fileService';
@@ -25,8 +25,9 @@ import { ExamplesService } from './service/examplesService';
 import { CanmvResourceRouteService } from './service/resourceRouteService';
 import { ThresholdEditorPanel, type ThresholdEditorConfig, type ThresholdMode } from './webview/ThresholdEditorPanel';
 import { Methods, createRequest } from './protocol/methods';
-import { isResponse } from './protocol/types';
+import { isResponse, type ProtocolError, type Response } from './protocol/types';
 import { registerMcpSupport } from './mcp/provider';
+import { McpBridgeServer } from './mcp/bridge';
 import { logDebug, logError, logInfo, logWarn } from './output';
 import { t, states } from './i18n';
 
@@ -85,9 +86,8 @@ function scriptExceptionSummary(output: string, stopInFlight = false): string | 
   return undefined;
 }
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
   logActivationInfo(context);
-  registerMcpSupport(context);
 
   backend = new NativeBackend(context);
   const session = new Session(backend, {
@@ -145,6 +145,7 @@ export function activate(context: vscode.ExtensionContext) {
   let refreshExplorerSoon: (delayMs?: number) => void = () => {};
   let pauseRemoteFiles: (durationMs: number) => void = () => {};
   let onScriptRunningContextChanged = () => {};
+  let mcpBridge: McpBridgeServer | undefined;
   const extensionStatusTooltipLines = () => [
     t('CanMV extension'),
     t('Extension Version: {version}', { version: extensionVersion }),
@@ -194,6 +195,7 @@ export function activate(context: vscode.ExtensionContext) {
     if (value) {
       refreshExplorerSoon(250);
     }
+    mcpBridge?.broadcastSnapshot();
   };
   const resetBoardReadiness = () => {
     pendingBoardReadyEvent = false;
@@ -296,6 +298,7 @@ export function activate(context: vscode.ExtensionContext) {
     updateTerminalInputState();
     updateExplorerConnectionState();
     onScriptRunningContextChanged();
+    mcpBridge?.broadcastSnapshot();
   };
   const boardStatusText = (_info: BoardInfo) => {
     return `$(circuit-board) ${extensionStatusLabel}`;
@@ -862,14 +865,18 @@ export function activate(context: vscode.ExtensionContext) {
     }
   };
 
-  const startPreviewManual = async () => {
+  const startPreviewManual = async (): Promise<boolean> => {
     cancelPreviewAutoStart();
     await waitForPreviewAutoStart();
     previewManuallyStopped = false;
     previewPausedForScript = false;
     previewPanel?.sendPreviewDisabled(false);
+    if (session.state === 'streaming') {
+      ensurePreviewPanel();
+      return true;
+    }
     if (session.state !== 'connected') {
-      return;
+      return false;
     }
     ensurePreviewPanel();
     const started = await getVideoService()?.startPreview(undefined, undefined, { assumeScriptRunning: assumeScriptRunningForPreview() });
@@ -877,6 +884,7 @@ export function activate(context: vscode.ExtensionContext) {
       updatePreviewWatchdog();
       updateVirtualTouchRefreshTimer();
     }
+    return started === true;
   };
 
   async function stopPreviewRuntime() {
@@ -1273,58 +1281,68 @@ export function activate(context: vscode.ExtensionContext) {
   );
   updateTerminalInputState();
 
+  const connectBoardRuntime = async (options: ConnectBoardOptions = {}): Promise<BoardInfo | null> => {
+    if (connected) return boardService.boardInfo();
+    if (!disconnected || connectionBusy || scriptBusy) return null;
+    setConnectionPhase('connecting');
+    setConnectionBusyContext(true);
+    cancelPreviewAutoStart();
+    resetBoardReadiness();
+    try {
+      fileService.clearCache();
+      const repl = await boardService.connectBoard(options);
+      const info = boardService.boardInfo();
+      if (info) {
+        setBoardReadyContext(pendingBoardReadyEvent || !boardHasCapabilitiesProtocol());
+        updateExplorerConnectionState();
+        updateBoardStatus();
+        previewPanel?.sendBoardInfo(info);
+      } else {
+        setBoardReadyContext(false);
+      }
+      if (repl) appendTerminal(repl);
+      updateTerminalInputState();
+      mcpBridge?.broadcastSnapshot();
+      return info;
+    } finally {
+      setConnectionBusyContext(false);
+      setConnectionPhase('idle');
+    }
+  };
+
+  const disconnectBoardRuntime = async (): Promise<void> => {
+    if (!connected || connectionBusy || scriptBusy) return;
+    setConnectionPhase('disconnecting');
+    setConnectionBusyContext(true);
+    try {
+      cancelPreviewAutoStart();
+      previewPausedForScript = false;
+      clearVirtualTouchState();
+      updateVirtualTouchRefreshTimer();
+      if (scriptRunning) {
+        await stopRunningScript({ stopPreview: true, allowWhileConnectionBusy: true });
+      }
+      videoService?.clearPreviewState();
+      resetBoardReadiness();
+      fileService.clearCache();
+      await boardService.disconnectBoard();
+      setStatusForState('disconnected');
+      updateTerminalInputState();
+      appendTerminalLine(t('[CanMV] Disconnected'));
+      mcpBridge?.broadcastSnapshot();
+    } finally {
+      setConnectionBusyContext(false);
+      setConnectionPhase('idle');
+    }
+  };
+
   // Register commands
   disposables = [
     vscode.commands.registerCommand('canmv.connectBoard', async () => {
-      if (!disconnected || connectionBusy || scriptBusy) return;
-      setConnectionPhase('connecting');
-      setConnectionBusyContext(true);
-      cancelPreviewAutoStart();
-      resetBoardReadiness();
-      try {
-        fileService.clearCache();
-        const repl = await boardService.connectBoard();
-        const info = boardService.boardInfo();
-        if (info) {
-          setBoardReadyContext(pendingBoardReadyEvent || !boardHasCapabilitiesProtocol());
-          updateExplorerConnectionState();
-          updateBoardStatus();
-          previewPanel?.sendBoardInfo(info);
-        } else {
-          setBoardReadyContext(false);
-        }
-        if (repl) {
-          appendTerminal(repl);
-        }
-        updateTerminalInputState();
-      } finally {
-        setConnectionBusyContext(false);
-        setConnectionPhase('idle');
-      }
+      await connectBoardRuntime();
     }),
     vscode.commands.registerCommand('canmv.disconnectBoard', async () => {
-      if (!connected || connectionBusy || scriptBusy) return;
-      setConnectionPhase('disconnecting');
-      setConnectionBusyContext(true);
-      try {
-        cancelPreviewAutoStart();
-        previewPausedForScript = false;
-        clearVirtualTouchState();
-        updateVirtualTouchRefreshTimer();
-        if (scriptRunning) {
-          await stopRunningScript({ stopPreview: true, allowWhileConnectionBusy: true });
-        }
-        videoService?.clearPreviewState();
-        resetBoardReadiness();
-        fileService.clearCache();
-        await boardService.disconnectBoard();
-        setStatusForState('disconnected');
-        updateTerminalInputState();
-        appendTerminalLine(t('[CanMV] Disconnected'));
-      } finally {
-        setConnectionBusyContext(false);
-        setConnectionPhase('idle');
-      }
+      await disconnectBoardRuntime();
     }),
     vscode.commands.registerCommand('canmv.runCurrentScript', async () => {
       if (!beginScriptOperation()) return;
@@ -1722,6 +1740,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Script output events → Output Channel
   backend.onEvent((event) => {
+    mcpBridge?.broadcastEvent(event);
     if (event.event === 'scriptOutput') {
       const text = (event.params as any).text || '';
       appendTerminal(text);
@@ -1788,9 +1807,152 @@ export function activate(context: vscode.ExtensionContext) {
     } else {
       setStatusForState(state);
     }
+    mcpBridge?.broadcastSnapshot();
   });
 
-  toolHost.open('preview');
+  const sendBridgeRequest = async (
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Response | ProtocolError> => {
+    const request = createRequest({
+      method,
+      params: {} as Record<string, unknown>,
+      result: {} as unknown,
+      errors: {} as Record<number, string>,
+    }, params);
+
+    if (method === Methods.detectBoards.method && session.state === 'disconnected') {
+      const baudRate = vscode.workspace.getConfiguration('canmv').get<number>('baudRate', 12000000);
+      try {
+        await backend!.open('__detect__', baudRate);
+        return await session.request(request);
+      } finally {
+        await backend!.close();
+      }
+    }
+
+    if (method === Methods.connectBoard.method) {
+      const requestedPort = typeof params.port === 'string' ? params.port : undefined;
+      const current = boardService.boardInfo();
+      if (connected && current) {
+        if (requestedPort && current.port && requestedPort !== current.port) {
+          return {
+            id: request.id,
+            error: { code: 1003, message: `Already connected to ${current.port}` },
+          };
+        }
+        return {
+          id: request.id,
+          result: {
+            ...current,
+            repl: '',
+            mcpBridgeReady: boardReady,
+            mcpBridgeScriptRunning: scriptRunning,
+          },
+        };
+      }
+      const info = await connectBoardRuntime({
+        port: requestedPort,
+        baudRate: typeof params.baudRate === 'number' ? params.baudRate : undefined,
+        interactive: false,
+        notify: false,
+      });
+      if (!info) {
+        return { id: request.id, error: { code: 1001, message: 'Unable to connect to the CanMV board' } };
+      }
+      return {
+        id: request.id,
+        result: {
+          ...info,
+          mcpBridgeReady: boardReady,
+          mcpBridgeScriptRunning: scriptRunning,
+        },
+      };
+    }
+
+    if (method === Methods.disconnectBoard.method) {
+      if (connectionBusy || scriptBusy) {
+        return { id: request.id, error: { code: 1003, message: 'Another CanMV operation is in progress' } };
+      }
+      if (connected) await disconnectBoardRuntime();
+      return { id: request.id, result: {} };
+    }
+
+    if (!connected) {
+      return { id: request.id, error: { code: 1004, message: 'Not connected' } };
+    }
+
+    if (method === Methods.startPreview.method) {
+      setScriptBusyContext(true);
+      try {
+        const started = await startPreviewManual();
+        if (!started) {
+          return { id: request.id, error: { code: 3002, message: 'Unable to start preview' } };
+        }
+        return { id: request.id, result: { streamId: 'default' } };
+      } finally {
+        setScriptBusyContext(false);
+      }
+    }
+
+    if (method === Methods.stopPreview.method) {
+      setScriptBusyContext(true);
+      try {
+        await stopPreviewManual();
+        return { id: request.id, result: {} };
+      } finally {
+        setScriptBusyContext(false);
+      }
+    }
+
+    setScriptBusyContext(true);
+    try {
+      if (method === Methods.runScript.method || method === Methods.ioFileExec.method) {
+        if (scriptRunning) {
+          return { id: request.id, error: { code: 2002, message: 'A script is already running' } };
+        }
+        await stopPreviewBeforeScript();
+      }
+      const response = await session.request(request);
+      if (!isResponse(response)) return response;
+
+      if (method === Methods.runScript.method || method === Methods.ioFileExec.method) {
+        const status = (response.result as { status?: string }).status;
+        if (status === 'ok' || status === 'started') {
+          setScriptRunningContext(true);
+          startPreviewForScript();
+          showScriptViews();
+        }
+      } else if (method === Methods.stopScript.method) {
+        setScriptRunningContext(false);
+      } else if (method === Methods.scriptRunning.method) {
+        setScriptRunningContext((response.result as { running?: boolean }).running === true);
+      }
+      if (method.startsWith('io.')) refreshExplorerSoon(200);
+      return response;
+    } finally {
+      setScriptBusyContext(false);
+    }
+  };
+
+  mcpBridge = new McpBridgeServer(context, sendBridgeRequest, () => {
+    const info = boardService.boardInfo();
+    return {
+      board: connected && info ? { ...info, repl: undefined } : undefined,
+      boardReady,
+      scriptRunning,
+      streaming: session.state === 'streaming',
+    };
+  });
+  context.subscriptions.push(mcpBridge);
+  try {
+    const bridgeInfo = await mcpBridge.start();
+    registerMcpSupport(context, bridgeInfo);
+  } catch (err) {
+    logWarn('MCP', `Local bridge unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    registerMcpSupport(context);
+  }
+
   logInfo('Extension', 'Activation complete');
 }
 

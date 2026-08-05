@@ -24,6 +24,7 @@
   "canmv.command.refreshExamples": "CanMV: Refresh Examples",
   "canmv.command.revealExamples": "CanMV: Reveal Examples",
   "canmv.command.openExampleFile": "CanMV: Open Example File",
+  "canmv.command.configureMcpClients": "CanMV: Configure MCP for Codex and Claude",
   "canmv.view.controls": "Controls",
   "canmv.view.toolbox": "Toolbox",
   "canmv.view.device": "Device",
@@ -35,5 +36,6 @@
   "canmv.configuration.autoReconnect.description": "Automatically reconnect on unexpected disconnect",
   "canmv.configuration.autoMinifyStartupScripts.description": "Minify /sdcard/main.py and /sdcard/boot.py before uploading",
   "canmv.configuration.stubsAutoDownload.description": "Automatically download K230 stubs and examples on board connect",
+  "canmv.configuration.mcp.autoConfigureClients.description": "Automatically register the CanMV MCP server with installed Codex and Claude Code clients.",
   "canmv.mcp.provider.label": "CanMV MCP Server"
 }
