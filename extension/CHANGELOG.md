@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.7
+
+- Added automatic user-scope MCP registration for Codex and Claude Code, with managed-entry protection, configuration refresh, and a manual setup command
+- Added an authenticated local bridge so MCP operations share the extension's board session and keep connection, script, terminal, preview, and explorer state synchronized
+- Preserved standalone MCP fallback when the VS Code extension bridge is unavailable
+
 ## 0.9.6
 
 - Added automatic user-scope MCP registration for installed Codex and Claude Code clients, with an opt-out setting and manual refresh command
