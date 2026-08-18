@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.8
+
+- Required the corresponding Codex or Claude Code VS Code extension before configuring its CanMV MCP registration
+- Added an actionable error that opens both supported extensions when neither MCP client extension is installed
+
 ## 0.9.7
 
 - Added automatic user-scope MCP registration for Codex and Claude Code, with managed-entry protection, configuration refresh, and a manual setup command
