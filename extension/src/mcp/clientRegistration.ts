@@ -9,41 +9,65 @@ const MCP_SERVER_NAME = 'canmv-k230';
 const MANAGED_MARKER = 'canmv-vscode';
 const PROCESS_TIMEOUT_MS = 15_000;
 
+export const MCP_CLIENT_EXTENSION_IDS = {
+  codex: 'openai.chatgpt',
+  claudeCode: 'anthropic.claude-code',
+} as const;
+
 export interface McpClientRegistrationResult {
   configured: string[];
   unchanged: string[];
   skipped: string[];
   failed: string[];
+  missingExtensions: string[];
 }
 
 export async function configureExternalMcpClients(
   context: vscode.ExtensionContext,
   bridge: McpBridgeConnectionInfo,
 ): Promise<McpClientRegistrationResult> {
-  const serverPath = path.join(context.extensionPath, 'out', 'mcp', 'server.js');
-  if (!fs.existsSync(serverPath)) {
-    throw new Error(`CanMV MCP server script not found: ${serverPath}`);
-  }
-  const env = createExternalServerEnv(context, bridge);
   const result: McpClientRegistrationResult = {
     configured: [],
     unchanged: [],
     skipped: [],
     failed: [],
+    missingExtensions: [],
   };
+  const codexExtension = vscode.extensions.getExtension(MCP_CLIENT_EXTENSION_IDS.codex);
+  const claudeExtension = vscode.extensions.getExtension(MCP_CLIENT_EXTENSION_IDS.claudeCode);
 
-  const codex = findClientExecutable('openai.chatgpt', 'codex');
-  if (codex) {
-    await configureCodex(codex, serverPath, env, result);
-  } else {
-    result.skipped.push('Codex (not installed)');
+  if (!codexExtension) {
+    result.skipped.push('Codex (extension not installed)');
+    result.missingExtensions.push(MCP_CLIENT_EXTENSION_IDS.codex);
+  }
+  if (!claudeExtension) {
+    result.skipped.push('Claude Code (extension not installed)');
+    result.missingExtensions.push(MCP_CLIENT_EXTENSION_IDS.claudeCode);
+  }
+  if (!codexExtension && !claudeExtension) return result;
+
+  const serverPath = path.join(context.extensionPath, 'out', 'mcp', 'server.js');
+  if (!fs.existsSync(serverPath)) {
+    throw new Error(`CanMV MCP server script not found: ${serverPath}`);
+  }
+  const env = createExternalServerEnv(context, bridge);
+
+  if (codexExtension) {
+    const codex = findClientExecutable(codexExtension.extensionPath, 'codex');
+    if (codex) {
+      await configureCodex(codex, serverPath, env, result);
+    } else {
+      result.skipped.push('Codex (executable not found)');
+    }
   }
 
-  const claude = findClientExecutable('anthropic.claude-code', 'claude');
-  if (claude) {
-    await configureClaude(claude, serverPath, env, result);
-  } else {
-    result.skipped.push('Claude Code (not installed)');
+  if (claudeExtension) {
+    const claude = findClientExecutable(claudeExtension.extensionPath, 'claude');
+    if (claude) {
+      await configureClaude(claude, serverPath, env, result);
+    } else {
+      result.skipped.push('Claude Code (executable not found)');
+    }
   }
 
   return result;
@@ -150,12 +174,9 @@ async function configureClaude(
   }
 }
 
-function findClientExecutable(extensionId: string, filename: string): string | undefined {
-  const extensionPath = vscode.extensions.getExtension(extensionId)?.extensionPath;
-  if (extensionPath) {
-    const bundled = findFile(extensionPath, executableNames(filename), 5);
-    if (bundled) return bundled;
-  }
+function findClientExecutable(extensionPath: string, filename: string): string | undefined {
+  const bundled = findFile(extensionPath, executableNames(filename), 5);
+  if (bundled) return bundled;
   const pathValue = process.env.PATH || '';
   for (const directory of pathValue.split(path.delimiter)) {
     if (!directory) continue;

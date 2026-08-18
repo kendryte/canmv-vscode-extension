@@ -4,7 +4,11 @@ import * as vscode from 'vscode';
 import { logInfo, logWarn } from '../output';
 import { t } from '../i18n';
 import type { McpBridgeConnectionInfo } from './bridge';
-import { configureExternalMcpClients, type McpClientRegistrationResult } from './clientRegistration';
+import {
+  configureExternalMcpClients,
+  MCP_CLIENT_EXTENSION_IDS,
+  type McpClientRegistrationResult,
+} from './clientRegistration';
 
 export const CANMV_MCP_PROVIDER_ID = 'canmv.mcp';
 
@@ -37,6 +41,19 @@ export function registerMcpSupport(
           }));
         } else if (result.failed.length > 0) {
           vscode.window.showErrorMessage(t('CanMV: MCP client configuration failed. See the CanMV output for details.'));
+        } else if (result.missingExtensions.length === Object.keys(MCP_CLIENT_EXTENSION_IDS).length) {
+          const openExtensions = t('Open Extensions');
+          void vscode.window.showErrorMessage(
+            t('CanMV: Install the Codex or Claude Code extension before configuring MCP.'),
+            openExtensions,
+          ).then((choice) => {
+            if (choice === openExtensions) {
+              void vscode.commands.executeCommand(
+                'workbench.extensions.action.showExtensionsWithIds',
+                Object.values(MCP_CLIENT_EXTENSION_IDS),
+              );
+            }
+          });
         } else {
           vscode.window.showWarningMessage(t('CanMV: No supported Codex or Claude Code client was found.'));
         }

@@ -81,6 +81,7 @@
   "CanMV: Failed to connect - {message}": "CanMV: 连接失败 - {message}",
   "CanMV: MCP configured for {clients}. Restart active agent sessions to refresh tools.": "CanMV: 已为 {clients} 配置 MCP。请重启正在运行的代理会话以刷新工具。",
   "CanMV: MCP client configuration failed. See the CanMV output for details.": "CanMV: MCP 客户端配置失败。详情请查看 CanMV 输出。",
+  "CanMV: Install the Codex or Claude Code extension before configuring MCP.": "CanMV: 配置 MCP 前，请先安装 Codex 或 Claude Code 扩展。",
   "CanMV: No supported Codex or Claude Code client was found.": "CanMV: 未找到支持的 Codex 或 Claude Code 客户端。",
   "CanMV: No Python file open. Open a .py file first.": "CanMV: 未打开 Python 文件。请先打开一个 .py 文件。",
   "CanMV: Script executed successfully ({filename}).": "CanMV: 脚本执行成功 ({filename})。",
