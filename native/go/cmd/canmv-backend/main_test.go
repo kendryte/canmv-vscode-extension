@@ -10,6 +10,34 @@ import (
 	"canmv-backend/internal/usbdbg"
 )
 
+func TestParseHTTPRelayPort(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		want    int
+		wantErr bool
+	}{
+		{name: "dynamic default", want: 0},
+		{name: "dynamic explicit", args: []string{"0"}, want: 0},
+		{name: "saved port", args: []string{"38319"}, want: 38319},
+		{name: "negative", args: []string{"-1"}, wantErr: true},
+		{name: "too large", args: []string{"65536"}, wantErr: true},
+		{name: "not a number", args: []string{"auto"}, wantErr: true},
+		{name: "too many", args: []string{"38319", "38320"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseHTTPRelayPort(tt.args)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseHTTPRelayPort(%q) error = %v, wantErr %t", tt.args, err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("parseHTTPRelayPort(%q) = %d, want %d", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFirmwareVersionForUser(t *testing.T) {
 	fullHash := "b31788cb14e5f67a53ff14c3d3433424de568116"
 	tests := []struct {

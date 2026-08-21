@@ -25,6 +25,7 @@
   "canmv.command.revealExamples": "CanMV: Reveal Examples",
   "canmv.command.openExampleFile": "CanMV: Open Example File",
   "canmv.command.configureMcpClients": "CanMV: Configure MCP for Codex and Claude",
+  "canmv.command.showMcpConfiguration": "CanMV: Show MCP Configuration for Other Agents",
   "canmv.view.controls": "Controls",
   "canmv.view.toolbox": "Toolbox",
   "canmv.view.device": "Device",

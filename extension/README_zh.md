@@ -128,9 +128,11 @@ CanMV 终端面板保留最近的滚动历史，同步显示开发板/脚本输�
 
 ### 使用 MCP 工具
 
-该扩展为 GitHub Copilot 向 VS Code 提供 `CanMV MCP Server` 定义，并自动向已安装的 Codex 和 Claude Code 客户端注册同一个服务器。首次注册后请重启正在运行的代理会话，使其重新加载 MCP 工具。可关闭 `canmv.mcp.autoConfigureClients` 以禁用自动注册，也可运行 `CanMV: 为 Codex 和 Claude 配置 MCP` 手动刷新注册。
+该扩展会启动一个经过认证的 Streamable HTTP MCP 服务，并将其提供给 VS Code 中的 GitHub Copilot。它还会向检测到的 Codex 和 Claude Code 客户端注册同一个端点。在 Windows 上，原生客户端和默认 WSL 发行版中安装的客户端均受支持。启用 Codex 的 `chatgpt.runCodexInWindowsSubsystemForLinux` 设置后，扩展只配置该 WSL Codex 主机，不会回退到实际未使用的 Windows 原生配置。扩展会验证每个受管注册，自动更新成功后保持静默，不会要求重新加载 VS Code 窗口。如果用户在 Codex 中禁用 CanMV 服务器，后续端点刷新会保留该禁用状态。可关闭 `canmv.mcp.autoConfigureClients` 以禁用自动注册，也可运行 `CanMV: 为 Codex 和 Claude 配置 MCP` 手动刷新注册并接收完成通知。对于同一主机上的其他 MCP 兼容智能体，可运行 `CanMV: 显示其他智能体的 MCP 配置`，打开实时 JSON 和 TOML 连接示例。示例中包含私有 bearer token，请勿分享。
 
-MCP 服务器作为 stdio Node 进程运行。扩展处于活动状态时，经过认证的本地桥接会通过扩展现有的后端和会话执行开发板操作，因此 CanMV UI 与 MCP 工具之间的连接、断开、脚本状态、终端输出、预览状态和设备浏览保持同步。桥接不可用时，从外部启动的 MCP 服务器会回退到内置的独立后端。服务器从扩展接收 `canmv.baudRate` 设置；MCP 客户端也可以向 `canmv_connect_board` 传入明确的串口路径。
+该服务使用保存在扩展全局存储目录中的私有 bearer token，并且只监听主机回环接口；来自浏览器 Origin 的请求会被拒绝。对于 WSL 客户端，扩展使用随附的原生后端在所选发行版内启动一个仅限回环的 HTTP 中继。该中继会为每个 WSL 发行版重用已保存的端口，仅在该端口不可用时选择新的动态端口，从而避免例行重写 Codex 配置。该中继只接受 `/health` 和 `/mcp`，通过扩展管理的私有分帧 IPC 将请求转发到 Windows 回环服务，并在注册前通过同一转发路径执行认证的端到端健康检查。该检查由中继自身执行，不依赖 `curl`、`wget` 或另一个 WSL shell。这避免了 Windows 入站防火墙、VPN、NAT 和镜像网络依赖，同时客户端传输仍为 Streamable HTTP，而不是 MCP stdio。WSL Codex 配置通过 `wsl.exe` 读写，从而避开 Windows Electron 对 `\\wsl.localhost` 路径的限制。注册失败只会在 CanMV 输出中直接报告，不会生成手动配置文件，也不会回退到其他客户端主机。
+
+扩展处于活动状态时，HTTP 服务会通过经过认证的本地桥接使用扩展现有的后端和会话执行开发板操作，因此 CanMV UI 与 MCP 工具之间的连接、断开、脚本状态、终端输出、预览状态和设备浏览保持同步。如果服务启动时桥接不可用，它会使用内置的独立后端。服务器从扩展接收 `canmv.baudRate` 设置；MCP 客户端也可以向 `canmv_connect_board` 传入明确的串口路径。
 
 面向开发板的 MCP 工具在需要硬件访问时会自动连接，并为相关的后续调用（如运行脚本、启动预览和读取帧）保持开发板会话。共享的扩展会话仅在调用 `canmv_disconnect_board` 或使用 CanMV UI 断开命令时断开，不会仅因代理进程退出而断开。独立会话还会在 MCP 客户端退出或空闲超时后断开。设置 `CANMV_MCP_IDLE_DISCONNECT_MS` 可调整独立模式的空闲超时时间，默认为 120000 毫秒。
 
@@ -162,6 +164,7 @@ MCP 功能包括：
 | `CanMV: Connect Board` | 连接 CanMV K230 开发板。 |
 | `CanMV: Disconnect Board` | 断开当前开发板连接。 |
 | `CanMV: Configure MCP for Codex and Claude` | 在已安装的 Codex 和 Claude Code 客户端中注册或刷新 CanMV MCP 服务器。 |
+| `CanMV: Show MCP Configuration for Other Agents` | 打开用于同一主机上其他 MCP 兼容智能体的 JSON 和 TOML 连接设置。 |
 | `CanMV: Run Active Python Script` | 在开发板上运行当前 Python 编辑器中的脚本。 |
 | `CanMV: Stop Script` | 停止正在运行的脚本。 |
 | `CanMV: Enable Preview` | 启用/打开实时帧预览。 |

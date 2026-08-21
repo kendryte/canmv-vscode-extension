@@ -25,6 +25,7 @@
   "canmv.command.revealExamples": "CanMV: 在文件管理器中显示示例",
   "canmv.command.openExampleFile": "CanMV: 打开示例文件",
   "canmv.command.configureMcpClients": "CanMV: 为 Codex 和 Claude 配置 MCP",
+  "canmv.command.showMcpConfiguration": "CanMV: 显示其他智能体的 MCP 配置",
   "canmv.view.controls": "控制",
   "canmv.view.toolbox": "工具箱",
   "canmv.view.device": "设备",

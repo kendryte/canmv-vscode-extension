@@ -2,7 +2,7 @@
   "name": "canmv-vscode",
   "displayName": "CanMV",
   "description": "%extension.description%",
-  "version": "0.9.8",
+  "version": "0.9.9",
   "publisher": "kendryte747",
   "repository": {
     "type": "git",
@@ -40,6 +40,7 @@
     "onStartupFinished",
     "onMcpServerDefinitionProvider:canmv.mcp",
     "onCommand:canmv.configureMcpClients",
+    "onCommand:canmv.showMcpConfiguration",
     "onCommand:canmv.connectBoard",
     "onCommand:canmv.disconnectBoard",
     "onCommand:canmv.runCurrentScript",
@@ -71,6 +72,11 @@
         "command": "canmv.configureMcpClients",
         "title": "%canmv.command.configureMcpClients%",
         "icon": "$(tools)"
+      },
+      {
+        "command": "canmv.showMcpConfiguration",
+        "title": "%canmv.command.showMcpConfiguration%",
+        "icon": "$(json)"
       },
       {
         "command": "canmv.connectBoard",
@@ -455,13 +461,19 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "typecheck": "tsc -p ./ --noEmit",
+    "compile": "npm run typecheck && node ./scripts/build.mjs",
+    "watch": "node ./scripts/build.mjs --watch",
     "package:vsix": "npm run compile && npx @vscode/vsce package"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.90.0",
+    "esbuild": "^0.25.9",
     "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "smol-toml": "^1.6.1"
   }
 }

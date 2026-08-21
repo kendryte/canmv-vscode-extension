@@ -2,6 +2,7 @@ src/**
 test*/
 tests/**
 webview/src/**
+scripts/**
 node_modules/**
 .vscode/**
 .vscode-test/**

@@ -1947,10 +1947,10 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(mcpBridge);
   try {
     const bridgeInfo = await mcpBridge.start();
-    registerMcpSupport(context, bridgeInfo);
+    await registerMcpSupport(context, bridgeInfo);
   } catch (err) {
     logWarn('MCP', `Local bridge unavailable: ${err instanceof Error ? err.message : String(err)}`);
-    registerMcpSupport(context);
+    await registerMcpSupport(context);
   }
 
   logInfo('Extension', 'Activation complete');

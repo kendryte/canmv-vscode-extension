@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.9
+
+- Added `CanMV: Show MCP Configuration for Other Agents` to open ephemeral JSON and TOML connection settings without writing credential-bearing setup files
+- Applied baud-rate and startup-script minification changes by restarting the shared MCP service, republishing its VS Code definition, and refreshing managed client registrations
+- Added supervised MCP service recovery that clears stale endpoints, restarts after unexpected exits, and re-registers replacement endpoints with external clients
+- Verified Claude Code registrations after writing them and used a token-derived credential fingerprint to detect stale bearer authentication even when the CLI redacts header values
+- Replaced native and WSL Codex configuration files atomically while preserving symlinks and validating the saved content
+- Reset active and starting WSL relays when their upstream endpoint or selected client host changes
+- Improved Windows MCP client registration by preferring native executables and launching command shims through PowerShell
+- Added actionable process errors for automatic Codex or Claude Code registration failures without generating manual setup artifacts
+- Verified Codex registrations after writing them, reported the active config path, and suppressed redundant VS Code reload prompts after automatic registration
+- Preserved an explicit Codex `enabled = false` choice when refreshing the extension-managed MCP endpoint
+- Replaced the per-client MCP stdio process with one extension-owned, bearer-authenticated Streamable HTTP service shared by VS Code, Codex, and Claude Code
+- Added an authenticated WSL-local Streamable HTTP relay with a relay-native end-to-end self-test, so WSL Codex or Claude Code clients do not depend on Windows inbound networking, shell HTTP tools, firewall, VPN, NAT, or mirrored-network behavior
+- Reused a saved relay port per WSL distribution, with dynamic fallback on conflicts, to avoid rewriting Codex configuration on every activation
+- Kept explicitly selected WSL Codex registration on its actual host and routed config updates through direct, non-login `wsl.exe` commands, avoiding false native success, shell startup interference, and blocked `\\wsl.localhost` file access
+- Restricted both the Windows MCP service and each WSL relay to loopback interfaces, with only `/health` and `/mcp` forwarded through private framed extension IPC
+
 ## 0.9.8
 
 - Required the corresponding Codex or Claude Code VS Code extension before configuring its CanMV MCP registration

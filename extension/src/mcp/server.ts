@@ -1,21 +1,25 @@
 import * as cp from 'child_process';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as http from 'http';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
+import { Server as McpProtocolServer } from '@modelcontextprotocol/sdk/server/index.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import {
+  CallToolRequestSchema,
+  GetPromptRequestSchema,
+  ListPromptsRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { JsonCodec, type WireMessage } from '../protocol/codec';
 import { FramedMessageReader, MAGIC, MSG_REQUEST } from '../protocol/framed_reader';
 import { Methods, createRequest, resetRequestId } from '../protocol/methods';
 import { type BackendMessage, type Event, type ProtocolError, type Request, type Response, isError, isEvent, isResponse } from '../protocol/types';
 import { minifyStartupScript } from '../service/startupScript';
-
-type JsonRpcId = string | number | null;
-type JsonRpcRequest = {
-  jsonrpc?: '2.0';
-  id?: JsonRpcId;
-  method?: string;
-  params?: unknown;
-};
 
 type ToolContent = { type: 'text'; text: string };
 type ToolResult = { content: ToolContent[]; isError?: boolean };
@@ -58,8 +62,8 @@ type FrameInfo = {
   dispatchTs?: number;
 };
 
-const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'canmv-k230';
+const MAX_HTTP_BODY_BYTES = 16 * 1024 * 1024;
 const DEFAULT_BAUD_RATE = readNumberEnv('CANMV_BAUD_RATE', 12000000);
 const AUTO_MINIFY_STARTUP_SCRIPTS = readBooleanEnv('CANMV_AUTO_MINIFY_STARTUP_SCRIPTS', true);
 const REQUEST_TIMEOUT_MS = 15000;
@@ -76,8 +80,9 @@ const MAX_SEARCH_LIMIT = 100;
 const IDLE_DISCONNECT_MS = readNonnegativeNumberEnv('CANMV_MCP_IDLE_DISCONNECT_MS', 120000);
 const DEFAULT_HOST_OUTPUT_DIR = process.env.CANMV_MCP_OUTPUT_DIR || path.join(os.tmpdir(), 'canmv-mcp');
 
-class CanmvMcpServer {
-  private lineBuffer = '';
+class HttpRequestTooLargeError extends Error {}
+
+class CanmvMcpHandler {
   private backend = new CanmvBackend();
   private boardInfo: BoardInfo | undefined;
   private boardReady = false;
@@ -526,109 +531,45 @@ class CanmvMcpServer {
     this.backend.onFrame((frame) => this.handleFrame(frame));
   }
 
-  start(): void {
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk) => this.handleInput(String(chunk)));
-    process.stdin.on('end', () => void this.shutdown());
-    process.on('SIGINT', () => void this.shutdown(0));
-    process.on('SIGTERM', () => void this.shutdown(0));
+  listTools(): { tools: Array<Omit<ToolDefinition, 'handler'>> } {
+    return {
+      tools: this.tools.map(({ name, title, description, inputSchema }) => ({ name, title, description, inputSchema })),
+    };
   }
 
-  private handleInput(chunk: string): void {
-    this.lineBuffer += chunk;
-    for (;;) {
-      const newline = this.lineBuffer.indexOf('\n');
-      if (newline < 0) return;
-      const line = this.lineBuffer.slice(0, newline).trim();
-      this.lineBuffer = this.lineBuffer.slice(newline + 1);
-      if (!line) continue;
-      let message: JsonRpcRequest;
-      try {
-        message = JSON.parse(line) as JsonRpcRequest;
-      } catch (err) {
-        this.sendError(null, -32700, 'Parse error', errorMessage(err));
-        continue;
-      }
-      void this.handleMessage(message);
-    }
+  async syncBridgeState(): Promise<void> {
+    await this.backend.syncBridgeState();
   }
 
-  private async handleMessage(message: JsonRpcRequest): Promise<void> {
-    const id = message.id ?? null;
-    const method = message.method;
-    if (!method) {
-      this.sendError(id, -32600, 'Invalid Request');
-      return;
-    }
-
-    try {
-      switch (method) {
-        case 'initialize':
-          await this.backend.syncBridgeState();
-          this.sendResult(id, {
-            protocolVersion: PROTOCOL_VERSION,
-            capabilities: { tools: {}, resources: {}, prompts: {} },
-            serverInfo: { name: SERVER_NAME, version: process.env.CANMV_EXTENSION_VERSION || 'unknown' },
-            instructions: scriptWorkflowInstructions(),
-          });
-          return;
-        case 'ping':
-          this.sendResult(id, {});
-          return;
-        case 'tools/list':
-          this.sendResult(id, {
-            tools: this.tools.map(({ name, title, description, inputSchema }) => ({ name, title, description, inputSchema })),
-          });
-          return;
-        case 'tools/call':
-          await this.callTool(id, asObject(message.params));
-          return;
-        case 'resources/list':
-          this.sendResult(id, listMcpResources(asObject(message.params)));
-          return;
-        case 'resources/read':
-          this.sendResult(id, readMcpResource(asObject(message.params)));
-          return;
-        case 'prompts/list':
-          this.sendResult(id, listMcpPrompts());
-          return;
-        case 'prompts/get':
-          this.sendResult(id, getMcpPrompt(asObject(message.params)));
-          return;
-        case 'notifications/initialized':
-        case 'notifications/cancelled':
-          return;
-        default:
-          if (id !== null) this.sendError(id, -32601, `Method not found: ${method}`);
-      }
-    } catch (err) {
-      if (id !== null) this.sendError(id, -32603, errorMessage(err));
-    }
-  }
-
-  private async callTool(id: JsonRpcId, params: Record<string, unknown>): Promise<void> {
+  async callTool(params: Record<string, unknown>): Promise<ToolResult> {
     const name = requiredString(params.name, 'name');
     const tool = this.tools.find((candidate) => candidate.name === name);
-    if (!tool) {
-      this.sendError(id, -32602, `Unknown tool: ${name}`);
-      return;
-    }
+    if (!tool) throw new Error(`Unknown tool: ${name}`);
     const args = asObject(params.arguments);
-    let value: unknown;
-    let error: unknown;
     try {
-      value = await tool.handler(args);
+      return toolResult(await tool.handler(args));
     } catch (err) {
-      error = err;
-    }
-    if (error) {
-      this.sendResult(id, {
+      return {
         isError: true,
-        content: [{ type: 'text', text: errorMessage(error) }],
-      } satisfies ToolResult);
-      return;
+        content: [{ type: 'text', text: errorMessage(err) }],
+      };
     }
-    this.sendResult(id, toolResult(value));
+  }
+
+  listResources(params: Record<string, unknown>): Record<string, unknown> {
+    return listMcpResources(params);
+  }
+
+  readResource(params: Record<string, unknown>): Record<string, unknown> {
+    return readMcpResource(params);
+  }
+
+  listPrompts(): Record<string, unknown> {
+    return listMcpPrompts();
+  }
+
+  getPrompt(params: Record<string, unknown>): Record<string, unknown> {
+    return getMcpPrompt(params);
   }
 
   private async connectBoard(portArg?: string, baudRateArg?: number): Promise<unknown> {
@@ -1020,26 +961,9 @@ class CanmvMcpServer {
     });
   }
 
-  private sendResult(id: JsonRpcId, result: unknown): void {
-    if (id === null) return;
-    this.write({ jsonrpc: '2.0', id, result });
-  }
-
-  private sendError(id: JsonRpcId, code: number, message: string, data?: unknown): void {
-    if (id === null) return;
-    this.write({ jsonrpc: '2.0', id, error: { code, message, data } });
-  }
-
-  private write(message: unknown): void {
-    process.stdout.write(JSON.stringify(message) + '\n');
-  }
-
-  private async shutdown(code?: number): Promise<void> {
+  async close(): Promise<void> {
     this.clearIdleDisconnect();
     await this.backend.close();
-    if (typeof code === 'number') {
-      process.exit(code);
-    }
   }
 }
 
@@ -1949,8 +1873,226 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function createMcpProtocolServer(handler: CanmvMcpHandler): McpProtocolServer {
+  const server = new McpProtocolServer(
+    {
+      name: SERVER_NAME,
+      version: process.env.CANMV_EXTENSION_VERSION || 'unknown',
+    },
+    {
+      capabilities: { tools: {}, resources: {}, prompts: {} },
+      instructions: scriptWorkflowInstructions(),
+    },
+  );
+  server.setRequestHandler(ListToolsRequestSchema, () => handler.listTools());
+  server.setRequestHandler(CallToolRequestSchema, (request) => handler.callTool(request.params as Record<string, unknown>));
+  server.setRequestHandler(ListResourcesRequestSchema, (request) => handler.listResources(request.params as Record<string, unknown>));
+  server.setRequestHandler(ReadResourceRequestSchema, (request) => handler.readResource(request.params as Record<string, unknown>));
+  server.setRequestHandler(ListPromptsRequestSchema, () => handler.listPrompts());
+  server.setRequestHandler(GetPromptRequestSchema, (request) => handler.getPrompt(request.params as Record<string, unknown>));
+  return server;
+}
+
+function isAuthorizedHttpRequest(request: http.IncomingMessage, token: string): boolean {
+  const authorization = request.headers.authorization || '';
+  const expected = `Bearer ${token}`;
+  const actualBuffer = Buffer.from(authorization);
+  const expectedBuffer = Buffer.from(expected);
+  return actualBuffer.length === expectedBuffer.length
+    && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
+function sendHttpJson(response: http.ServerResponse, statusCode: number, value: unknown, headers: Record<string, string> = {}): void {
+  if (response.headersSent) return;
+  response.writeHead(statusCode, {
+    'Cache-Control': 'no-store',
+    'Content-Type': 'application/json; charset=utf-8',
+    ...headers,
+  });
+  response.end(JSON.stringify(value));
+}
+
+function readHttpJson(request: http.IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let byteLength = 0;
+    let tooLarge = false;
+    request.on('data', (chunk: Buffer | string) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      byteLength += buffer.length;
+      if (byteLength > MAX_HTTP_BODY_BYTES) {
+        tooLarge = true;
+        chunks.length = 0;
+        return;
+      }
+      if (!tooLarge) chunks.push(buffer);
+    });
+    request.on('end', () => {
+      if (tooLarge) {
+        reject(new HttpRequestTooLargeError(`MCP HTTP request exceeds ${MAX_HTTP_BODY_BYTES} bytes`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      } catch (err) {
+        reject(new Error(`Invalid MCP HTTP JSON: ${errorMessage(err)}`));
+      }
+    });
+    request.on('aborted', () => reject(new Error('MCP HTTP request was aborted')));
+    request.on('error', reject);
+  });
+}
+
+async function handleHttpRequest(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  handler: CanmvMcpHandler,
+  token: string,
+): Promise<void> {
+  response.setHeader('Cache-Control', 'no-store');
+  let pathname = '';
+  try {
+    pathname = new URL(request.url || '/', 'http://localhost').pathname;
+  } catch {
+    sendHttpJson(response, 400, { error: 'Invalid request URL' });
+    return;
+  }
+  if (!isAuthorizedHttpRequest(request, token)) {
+    sendHttpJson(response, 401, { error: 'Unauthorized' }, { 'WWW-Authenticate': 'Bearer' });
+    return;
+  }
+  if (request.headers.origin) {
+    sendHttpJson(response, 403, { error: 'Browser-origin requests are not allowed' });
+    return;
+  }
+  if (pathname === '/health') {
+    if (request.method !== 'GET') {
+      sendHttpJson(response, 405, { error: 'Method not allowed' }, { Allow: 'GET' });
+      return;
+    }
+    sendHttpJson(response, 200, {
+      service: SERVER_NAME,
+      transport: 'streamable-http',
+      version: process.env.CANMV_EXTENSION_VERSION || 'unknown',
+      configurationId: process.env.CANMV_MCP_CONFIGURATION_ID || '',
+    });
+    return;
+  }
+  if (pathname !== '/mcp') {
+    sendHttpJson(response, 404, { error: 'Not found' });
+    return;
+  }
+  if (request.method !== 'POST') {
+    sendHttpJson(response, 405, {
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Method not allowed' },
+      id: null,
+    }, { Allow: 'POST' });
+    return;
+  }
+
+  let body: unknown;
+  try {
+    body = await readHttpJson(request);
+  } catch (err) {
+    const tooLarge = err instanceof HttpRequestTooLargeError;
+    sendHttpJson(response, tooLarge ? 413 : 400, {
+      jsonrpc: '2.0',
+      error: { code: tooLarge ? -32000 : -32700, message: errorMessage(err) },
+      id: null,
+    });
+    return;
+  }
+  try {
+    await handler.syncBridgeState();
+  } catch (err) {
+    logStderr(`MCP bridge synchronization failed: ${errorMessage(err)}`);
+    sendHttpJson(response, 503, {
+      jsonrpc: '2.0',
+      error: { code: -32001, message: 'CanMV extension bridge is unavailable' },
+      id: null,
+    });
+    return;
+  }
+
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+  const protocol = createMcpProtocolServer(handler);
+  response.once('close', () => {
+    void transport.close().finally(() => protocol.close());
+  });
+  try {
+    await protocol.connect(transport);
+    await transport.handleRequest(request, response, body);
+  } catch (err) {
+    logStderr(`MCP HTTP request failed: ${errorMessage(err)}`);
+    sendHttpJson(response, 500, {
+      jsonrpc: '2.0',
+      error: { code: -32603, message: 'Internal server error' },
+      id: null,
+    });
+  }
+}
+
 function logStderr(message: string): void {
   process.stderr.write(`[CanMV MCP] ${message}\n`);
 }
 
-new CanmvMcpServer().start();
+async function main(): Promise<void> {
+  const token = process.env.CANMV_MCP_HTTP_TOKEN || '';
+  if (!/^[0-9a-f]{64}$/i.test(token)) {
+    throw new Error('CANMV_MCP_HTTP_TOKEN must be a 64-character hexadecimal token');
+  }
+  const host = process.env.CANMV_MCP_HTTP_HOST || '127.0.0.1';
+  const rawPort = Number(process.env.CANMV_MCP_HTTP_PORT || '0');
+  if (!Number.isInteger(rawPort) || rawPort < 0 || rawPort > 65535) {
+    throw new Error(`Invalid CANMV_MCP_HTTP_PORT: ${process.env.CANMV_MCP_HTTP_PORT || ''}`);
+  }
+
+  const handler = new CanmvMcpHandler();
+  const httpServer = http.createServer((request, response) => {
+    void handleHttpRequest(request, response, handler, token).catch((err) => {
+      logStderr(`Unhandled MCP HTTP request error: ${errorMessage(err)}`);
+      sendHttpJson(response, 500, { error: 'Internal server error' });
+    });
+  });
+  httpServer.on('clientError', (err, socket) => {
+    logStderr(`MCP HTTP client error: ${err.message}`);
+    socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    const onError = (err: Error) => {
+      httpServer.off('listening', onListening);
+      reject(err);
+    };
+    const onListening = () => {
+      httpServer.off('error', onError);
+      resolve();
+    };
+    httpServer.once('error', onError);
+    httpServer.once('listening', onListening);
+    httpServer.listen(rawPort, host);
+  });
+  const address = httpServer.address();
+  if (!address || typeof address === 'string') throw new Error('Unable to resolve MCP HTTP listen address');
+  process.stdout.write(JSON.stringify({ type: 'ready', host, port: address.port }) + '\n');
+  logStderr(`Streamable HTTP server listening on ${host}:${address.port}`);
+
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    await handler.close();
+  };
+  process.on('SIGINT', () => void shutdown().finally(() => process.exit(0)));
+  process.on('SIGTERM', () => void shutdown().finally(() => process.exit(0)));
+}
+
+void main().catch((err) => {
+  logStderr(errorMessage(err));
+  process.exit(1);
+});

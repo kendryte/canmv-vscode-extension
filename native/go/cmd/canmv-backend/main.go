@@ -107,13 +107,38 @@ func runCommandLine(args []string) (int, bool) {
 			return 1, true
 		}
 		return 0, true
+	case "--http-relay":
+		port, err := parseHTTPRelayPort(args[1:])
+		if err != nil {
+			_, _ = os.Stderr.WriteString(err.Error() + "\nusage: canmv-backend --http-relay [port]\n")
+			return 2, true
+		}
+		if err := runHTTPRelay(os.Stdin, os.Stdout, port); err != nil {
+			_, _ = os.Stderr.WriteString("HTTP relay failed: " + err.Error() + "\n")
+			return 1, true
+		}
+		return 0, true
 	case "--help", "-h":
-		_, _ = os.Stdout.WriteString("usage: canmv-backend [--extract-archive <archive> <target-dir>]\n")
+		_, _ = os.Stdout.WriteString("usage: canmv-backend [--extract-archive <archive> <target-dir> | --http-relay [port]]\n")
 		return 0, true
 	default:
 		_, _ = os.Stderr.WriteString("unknown argument: " + args[0] + "\n")
 		return 2, true
 	}
+}
+
+func parseHTTPRelayPort(args []string) (int, error) {
+	if len(args) == 0 {
+		return 0, nil
+	}
+	if len(args) != 1 {
+		return 0, fmt.Errorf("HTTP relay accepts at most one port argument")
+	}
+	port, err := strconv.Atoi(args[0])
+	if err != nil || port < 0 || port > 65535 {
+		return 0, fmt.Errorf("invalid HTTP relay port %q", args[0])
+	}
+	return port, nil
 }
 
 func (s *server) installShutdownHandlers(done <-chan struct{}, parentPID int) {
