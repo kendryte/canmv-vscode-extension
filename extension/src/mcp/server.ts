@@ -1127,6 +1127,9 @@ class CanmvBackend {
   }
 
   private openBridge(): Promise<void> {
+    if (this.isOpen && this.bridgeSocket && !this.bridgeSocket.destroyed && this.bridgeSocket.writable) {
+      return Promise.resolve();
+    }
     if (this.bridgeConnectPromise) return this.bridgeConnectPromise;
     const endpoint = process.env.CANMV_MCP_BRIDGE_ENDPOINT;
     const token = process.env.CANMV_MCP_BRIDGE_TOKEN;
