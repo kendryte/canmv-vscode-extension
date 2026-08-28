@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.10
+
+- Reused the active authenticated extension bridge connection across MCP HTTP requests instead of opening and abandoning a socket for each request
+- Prevented concurrent bridge retries from treating a connecting socket as authenticated and sending requests before the bridge handshake completed
+
 ## 0.9.9
 
 - Added `CanMV: Show MCP Configuration for Other Agents` to open ephemeral JSON and TOML connection settings without writing credential-bearing setup files
