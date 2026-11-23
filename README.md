@@ -57,7 +57,7 @@ Package a VSIX with backend binaries for all supported platforms:
 
 The packaged VSIX is written to `release/`.
 
-Use `./scripts/package.sh --dev` for a test VSIX that appears as `CanMV-dev` in the Extensions view. Its version gets a `-dev.<UTC timestamp>` suffix (for example `0.9.10-dev.202611231530`). It keeps the same extension ID, so it replaces the regular build when installed, and the next Marketplace release of the same version replaces it again.
+Use `./scripts/package.sh --dev` for a test VSIX that appears as `CanMV-dev` in the Extensions view. Its version gets a `-dev.<UTC timestamp>` suffix (for example `0.9.11-dev.202611231530`). It keeps the same extension ID, so it replaces the regular build when installed, and the next Marketplace release of the same version replaces it again.
 
 ## Development Workflow
 

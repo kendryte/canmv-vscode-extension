@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.11
+
+- Avoided the recursive copy path implicated in a reported Windows extension host crash during Pylance stub setup, while preserving custom stub merging.
+- Kept custom stubs working in Pylance when a stub folder contains broken links, link loops, or special files. These entries are now skipped with a warning instead of disabling the whole stub overlay.
+- Prevented VS Code and MCP from reusing incomplete examples caches. Examples are now published only after successful extraction.
+- Retried saving downloaded examples and stubs when Windows briefly locks new files, and stopped one VS Code window from deleting examples another window had just downloaded.
+- Removed temporary folders left behind when VS Code closes or crashes during a download, and stopped MCP from reading stubs from them.
+- Kept examples downloaded by earlier versions available as an offline fallback when no complete examples cache exists. The next successful download replaces them.
+- Added `scripts/package.sh --dev` for test VSIX packages that appear as `CanMV-dev` in VS Code. They are versioned `<version>-dev.<timestamp>`, so the Marketplace release of the same version replaces them.
+
 ## 0.9.10
 
 - Reused the active authenticated extension bridge connection across MCP HTTP requests instead of opening and abandoning a socket for each request
