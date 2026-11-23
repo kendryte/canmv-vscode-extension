@@ -2,7 +2,16 @@
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-VERSION="$(node -p "require('$PROJECT_DIR/extension/package.json').version")"
+MANIFEST_PATH="$PROJECT_DIR/extension/package.json"
+DEV_BUILD=0
+if [ "$#" -eq 1 ] && [ "$1" = "--dev" ]; then
+  DEV_BUILD=1
+elif [ "$#" -ne 0 ]; then
+  echo "Usage: $0 [--dev]" >&2
+  exit 2
+fi
+
+VERSION="$(node -p 'require(process.argv[1]).version' "$MANIFEST_PATH")"
 COMMIT_FULL="${CI_COMMIT_SHA:-${GITHUB_SHA:-}}"
 if [ -z "$COMMIT_FULL" ]; then
   COMMIT_FULL="$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")"
@@ -10,17 +19,27 @@ fi
 COMMIT="${CI_COMMIT_SHORT_SHA:-${COMMIT_FULL:0:7}}"
 VERSION="${VERSION%-${COMMIT}}"
 VERSION="${VERSION%-${COMMIT:0:7}}"
+if [ "$DEV_BUILD" = 1 ]; then
+  # A prerelease version sorts below the release, so VS Code offers the Marketplace build as an
+  # update, and the version in logs and build-info.json shows that this is a dev build.
+  VERSION="${VERSION}-dev.$(date -u +%Y%m%d%H%M)"
+fi
 VSIX_NAME="canmv-vscode-${VERSION}-${COMMIT}.vsix"
 BUILD_INFO_PATH="$PROJECT_DIR/extension/build-info.json"
 BUILD_INFO_BACKUP=""
 BUILD_INFO_EXISTED=0
+MANIFEST_BACKUP=""
 if [ -f "$BUILD_INFO_PATH" ]; then
   BUILD_INFO_EXISTED=1
   BUILD_INFO_BACKUP="$(mktemp)"
   cp "$BUILD_INFO_PATH" "$BUILD_INFO_BACKUP"
 fi
 
-cleanup_build_info() {
+cleanup_package_files() {
+  if [ -n "$MANIFEST_BACKUP" ]; then
+    cp "$MANIFEST_BACKUP" "$MANIFEST_PATH"
+    rm -f "$MANIFEST_BACKUP"
+  fi
   if [ "$BUILD_INFO_EXISTED" -eq 1 ] && [ -n "$BUILD_INFO_BACKUP" ]; then
     cp "$BUILD_INFO_BACKUP" "$BUILD_INFO_PATH"
     rm -f "$BUILD_INFO_BACKUP"
@@ -28,7 +47,7 @@ cleanup_build_info() {
     rm -f "$BUILD_INFO_PATH"
   fi
 }
-trap cleanup_build_info EXIT
+trap cleanup_package_files EXIT
 
 write_build_info() {
   local dirty=0
@@ -96,6 +115,19 @@ stage_backend "darwin-arm64" "canmv-backend"
 # Step 3: Package VSIX
 echo "Packaging VSIX..."
 write_build_info
+if [ "$DEV_BUILD" = 1 ]; then
+  manifest_backup="$(mktemp)"
+  cp "$MANIFEST_PATH" "$manifest_backup"
+  MANIFEST_BACKUP="$manifest_backup"
+  node - "$MANIFEST_PATH" "$VERSION" <<'NODE'
+const fs = require('fs');
+const [file, version] = process.argv.slice(2);
+const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+manifest.version = version;
+manifest.displayName = `${manifest.displayName}-dev`;
+fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + '\n');
+NODE
+fi
 mkdir -p "$PROJECT_DIR/release"
 pushd "$PROJECT_DIR/extension" > /dev/null
 npx @vscode/vsce package -o "$PROJECT_DIR/release/$VSIX_NAME"

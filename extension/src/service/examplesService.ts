@@ -5,13 +5,25 @@ import * as os from 'os';
 import { execFile } from 'child_process';
 import { logError, logInfo, logWarn } from '../output';
 import { resolveNativeBackendCommand } from '../backend/native';
-import { CanmvResourceRoute, CanmvResourceRouteService, normalizeExamplesId } from './resourceRouteService';
+import {
+  createCacheTempDir,
+  examplesArchiveFile,
+  hasExtractedExamples,
+  isUsableExamplesCache,
+  listExamplesCaches,
+  normalizeExamplesId,
+  publishCacheDir,
+  removeDir,
+  removeStaleCacheTempDirs,
+} from './resourceCache';
+import { CanmvResourceRoute, CanmvResourceRouteService } from './resourceRouteService';
 
 export class ExamplesService {
   private static readonly lastExamplesKey = 'canmv.examples.lastId';
   private readonly _onDidChangeExamples = new vscode.EventEmitter<void>();
   readonly onDidChangeExamples = this._onDidChangeExamples.event;
   private readonly baseDir: string;
+  private staleTempCleanup: Promise<void> | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -21,6 +33,7 @@ export class ExamplesService {
   }
 
   async ensureExamples(route: CanmvResourceRoute | null): Promise<string | null> {
+    await this.removeStaleTempDirs();
     const examplesId = normalizeExamplesId(route?.examplesId || '');
     if (!examplesId) return this.ensureLocalExamples();
 
@@ -58,8 +71,7 @@ export class ExamplesService {
     if (normalized && this.isCacheUsable(normalized)) {
       return this.cacheDirFor(normalized);
     }
-    const localExamplesId = this.findLatestLocalExamplesId();
-    return localExamplesId ? this.cacheDirFor(localExamplesId) : '';
+    return listExamplesCaches(this.baseDir)[0]?.dir || '';
   }
 
   examplesRootDir(): string {
@@ -84,14 +96,7 @@ export class ExamplesService {
   }
 
   private isCacheUsable(examplesId: string): boolean {
-    const normalized = normalizeExamplesId(examplesId);
-    if (!normalized) return false;
-    const cacheDir = this.cacheDirFor(normalized);
-    try {
-      return fs.existsSync(cacheDir) && this.hasExtractedContent(cacheDir);
-    } catch {
-      return false;
-    }
+    return isUsableExamplesCache(this.cacheDirFor(examplesId));
   }
 
   private async ensureLocalExamples(): Promise<string | null> {
@@ -103,48 +108,31 @@ export class ExamplesService {
       return cacheDir;
     }
 
-    const localExamplesId = this.findLatestLocalExamplesId();
-    if (localExamplesId) {
-      const cacheDir = this.cacheDirFor(localExamplesId);
-      logInfo('Examples', `Using latest local cached examples: ${localExamplesId} (${cacheDir})`);
-      await this.context.globalState.update(ExamplesService.lastExamplesKey, localExamplesId);
+    const local = listExamplesCaches(this.baseDir)[0];
+    if (local) {
+      if (local.legacy) {
+        logWarn('Examples', `Using possibly incomplete examples from an older version; connect a board online to refresh: ${local.id} (${local.dir})`);
+      } else {
+        logInfo('Examples', `Using latest local cached examples: ${local.id} (${local.dir})`);
+      }
+      await this.context.globalState.update(ExamplesService.lastExamplesKey, local.id);
       this._onDidChangeExamples.fire();
-      return cacheDir;
+      return local.dir;
     }
 
     return null;
   }
 
-  private findLatestLocalExamplesId(): string {
-    try {
-      if (!fs.existsSync(this.baseDir)) return '';
-      const examples = fs.readdirSync(this.baseDir, { withFileTypes: true })
-        .filter(entry => entry.isDirectory() && this.isCacheUsable(entry.name))
-        .map(entry => {
-          const examplesId = entry.name;
-          const mtime = fs.statSync(this.cacheDirFor(examplesId)).mtimeMs;
-          return { examplesId, mtime };
-        })
-        .sort((a, b) => b.mtime - a.mtime);
-      return examples[0]?.examplesId || '';
-    } catch {
-      return '';
-    }
-  }
-
-  private hasExtractedContent(cacheDir: string): boolean {
-    try {
-      const entries = fs.readdirSync(cacheDir, { withFileTypes: true });
-      return entries.some(entry =>
-        entry.isDirectory() && (entry.name === 'examples' || entry.name === 'models')
-      );
-    } catch {
-      return false;
-    }
+  private removeStaleTempDirs(): Promise<void> {
+    this.staleTempCleanup ??= removeStaleCacheTempDirs(this.baseDir).then(removed => {
+      for (const dir of removed) logInfo('Examples', `Removed interrupted examples download: ${dir}`);
+    });
+    return this.staleTempCleanup;
   }
 
   private async downloadAndExtract(examplesId: string, zipUrl: string, cacheDir: string): Promise<boolean> {
     logInfo('Examples', `Downloading examples archive: ${zipUrl}`);
+    let tempDir = '';
     try {
       const data = await this.routeService.fetchBuffer(zipUrl);
       if (!data || data.length === 0) {
@@ -152,24 +140,33 @@ export class ExamplesService {
         return false;
       }
 
-      fs.mkdirSync(cacheDir, { recursive: true });
-      const zipPath = path.join(cacheDir, 'examples.zip');
+      tempDir = createCacheTempDir(this.baseDir, examplesId);
+      const zipPath = path.join(tempDir, examplesArchiveFile);
       fs.writeFileSync(zipPath, data);
-      await this.extractArchive(zipPath, cacheDir);
+      await this.extractArchive(zipPath, tempDir);
       fs.unlinkSync(zipPath);
 
-      if (this.isCacheUsable(examplesId)) {
-        logInfo('Examples', `Extracted examples archive: ${data.length} bytes -> ${cacheDir}`);
-        return true;
+      if (!hasExtractedExamples(tempDir)) {
+        logWarn('Examples', `Extracted archive did not contain example files: ${examplesId}`);
+        return false;
       }
 
-      this.cleanupFailedDownload(cacheDir);
-      logWarn('Examples', `Extracted archive did not contain example files: ${examplesId}`);
-      return false;
+      if (await publishCacheDir(tempDir, cacheDir, isUsableExamplesCache)) {
+        tempDir = '';
+        logInfo('Examples', `Extracted examples archive: ${data.length} bytes -> ${cacheDir}`);
+      } else {
+        logInfo('Examples', `Examples were already published by another window: ${cacheDir}`);
+      }
+      return true;
     } catch (err) {
       logError('Examples', `Download/extract failed for ${examplesId}: ${err}`);
-      this.cleanupFailedDownload(cacheDir);
       return false;
+    } finally {
+      if (tempDir) {
+        await removeDir(tempDir).catch(err => {
+          logWarn('Examples', `Could not remove temporary examples cache: ${err}`);
+        });
+      }
     }
   }
 
@@ -190,19 +187,5 @@ export class ExamplesService {
         }
       );
     });
-  }
-
-  private cleanupFailedDownload(targetDir: string): void {
-    try {
-      if (!fs.existsSync(targetDir) || this.hasExtractedContent(targetDir)) {
-        return;
-      }
-      for (const entry of fs.readdirSync(targetDir)) {
-        fs.rmSync(path.join(targetDir, entry), { recursive: true, force: true });
-      }
-      fs.rmdirSync(targetDir);
-    } catch {
-      // ignore cleanup errors
-    }
   }
 }

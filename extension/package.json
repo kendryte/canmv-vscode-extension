@@ -461,6 +461,7 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
+    "test": "node --test",
     "typecheck": "tsc -p ./ --noEmit",
     "compile": "npm run typecheck && node ./scripts/build.mjs",
     "watch": "node ./scripts/build.mjs --watch",

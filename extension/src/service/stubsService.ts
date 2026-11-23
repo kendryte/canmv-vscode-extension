@@ -7,7 +7,8 @@ import { execFile } from 'child_process';
 import { logError, logInfo, logWarn } from '../output';
 import { resolveNativeBackendCommand } from '../backend/native';
 import { t } from '../i18n';
-import { CanmvResourceRoute, CanmvResourceRouteService, normalizeFirmwareRevision } from './resourceRouteService';
+import { CanmvResourceRoute, CanmvResourceRouteService } from './resourceRouteService';
+import { createCacheTempDir, isFirmwareRevisionDirName, normalizeFirmwareRevision, publishCacheDir, removeStaleCacheTempDirs } from './resourceCache';
 
 type PylanceStubOverlay = {
   stubPath: string;
@@ -25,6 +26,22 @@ type PylanceStubOverlayManifest = {
 type StubCacheValidation = {
   ok: boolean;
   pyiFiles: number;
+};
+
+type StubWalk = {
+  /** Normalized real path of the overlay being written or verified. */
+  overlayRoot: string;
+  /** Normalized real paths of the folders on the current path, to detect link cycles. */
+  ancestors: Set<string>;
+  onSkip?: (source: string, reason: string) => void;
+};
+
+type StubEntry = {
+  name: string;
+  source: string;
+  /** Normalized real path. */
+  realSource: string;
+  isDirectory: boolean;
 };
 
 type StubCacheStats = {
@@ -50,6 +67,7 @@ export class StubsService {
   private boardRevisionRequested = '';
   private pylanceWarningShown = false;
   private reloadPromptSignature = '';
+  private staleTempCleanup: Promise<void> | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext | undefined,
@@ -60,6 +78,7 @@ export class StubsService {
   }
 
   async ensureDefaultStubs(): Promise<string | null> {
+    await this.removeStaleTempDirs();
     const lastRevision = this.context?.globalState.get<string>(StubsService.lastRevisionKey) || '';
     if (this.isCacheUsable(lastRevision)) {
       logInfo('Stubs', `Using last configured local stubs: ${lastRevision}`);
@@ -92,6 +111,7 @@ export class StubsService {
   }
 
   async ensureBoardStubs(boardRevision: string): Promise<string | null> {
+    await this.removeStaleTempDirs();
     const revision = normalizeFirmwareRevision(boardRevision);
     if (!revision) {
       logWarn('Stubs', 'Board revision unavailable; keeping default stubs');
@@ -244,7 +264,7 @@ export class StubsService {
     try {
       if (!fs.existsSync(this.baseDir)) return '';
       const revisions = fs.readdirSync(this.baseDir, { withFileTypes: true })
-        .filter(entry => entry.isDirectory() && this.isCacheUsable(entry.name))
+        .filter(entry => entry.isDirectory() && isFirmwareRevisionDirName(entry.name) && this.isCacheUsable(entry.name))
         .map(entry => {
           const revision = entry.name;
           const mtime = fs.statSync(this.cacheDirFor(revision)).mtimeMs;
@@ -302,7 +322,7 @@ export class StubsService {
         return false;
       }
 
-      tempDir = this.createCacheTempDir(route.revision);
+      tempDir = createCacheTempDir(this.baseDir, route.revision);
       const zipPath = path.join(tempDir, 'stubs.zip');
       fs.writeFileSync(zipPath, data);
 
@@ -312,8 +332,15 @@ export class StubsService {
       this.flattenIfNeeded(tempDir);
       const validation = this.validateStubCache(tempDir);
       if (validation.ok) {
-        this.replaceCacheDir(tempDir, cacheDir);
-        logInfo('Stubs', `Extracted stubs archive: ${data.length} bytes, ${validation.pyiFiles} .pyi files -> ${cacheDir}`);
+        if (!this.isCanMVStubsPath(tempDir) || !this.isCanMVStubsPath(cacheDir)) {
+          throw new Error(`Refusing to publish stubs outside the CanMV stubs cache: ${tempDir} -> ${cacheDir}`);
+        }
+        if (await publishCacheDir(tempDir, cacheDir, dir => this.validateStubCache(dir).ok)) {
+          logInfo('Stubs', `Extracted stubs archive: ${data.length} bytes, ${validation.pyiFiles} .pyi files -> ${cacheDir}`);
+        } else {
+          logInfo('Stubs', `Stubs were already published by another window: ${cacheDir}`);
+          this.cleanupCacheTempDir(tempDir);
+        }
         return true;
       }
 
@@ -588,20 +615,11 @@ export class StubsService {
     return `${stats.files}:${stats.pyiFiles}:${Math.trunc(stats.maxMtimeMs)}`;
   }
 
-  private createCacheTempDir(revision: string): string {
-    fs.mkdirSync(this.baseDir, { recursive: true });
-    return fs.mkdtempSync(path.join(this.baseDir, `${revision}.tmp-`));
-  }
-
-  private replaceCacheDir(tempDir: string, cacheDir: string): void {
-    if (!this.isCanMVStubsPath(tempDir)) {
-      throw new Error(`Refusing to use non-CanMV stubs temp path: ${tempDir}`);
-    }
-    if (!this.isCanMVStubsPath(cacheDir)) {
-      throw new Error(`Refusing to replace non-CanMV stubs cache path: ${cacheDir}`);
-    }
-    fs.rmSync(cacheDir, { recursive: true, force: true });
-    fs.renameSync(tempDir, cacheDir);
+  private removeStaleTempDirs(): Promise<void> {
+    this.staleTempCleanup ??= removeStaleCacheTempDirs(this.baseDir).then(removed => {
+      for (const dir of removed) logInfo('Stubs', `Removed interrupted stubs download: ${dir}`);
+    });
+    return this.staleTempCleanup;
   }
 
   private cleanupCacheTempDir(tempDir: string): void {
@@ -647,83 +665,131 @@ export class StubsService {
   }
 
   private copyStubRoot(sourceDir: string, overlayDir: string, overwrite: boolean): void {
-    const normalizedSource = this.normalizeFsPathForCompare(sourceDir);
-    const normalizedOverlay = this.normalizeFsPathForCompare(overlayDir);
-    if (!normalizedSource || normalizedSource === normalizedOverlay) return;
-
     try {
-      const entries = fs.readdirSync(sourceDir, { withFileTypes: true });
-      for (const entry of entries) {
-        const source = path.join(sourceDir, entry.name);
-        const target = path.join(overlayDir, entry.name);
-        if (fs.existsSync(target)) {
-          if (!overwrite) continue;
-          fs.rmSync(target, { recursive: true, force: true });
-        }
-        fs.cpSync(source, target, { recursive: true, dereference: true, errorOnExist: true, force: false });
+      const { realSource, walk } = this.startStubWalk(sourceDir, overlayDir, (source, reason) => {
+        logWarn('Stubs', `Skipped stub entry ${source}: ${reason}`);
+      });
+      if (this.pathContains(realSource, walk.overlayRoot)) {
+        throw new Error('the folder contains the Pylance overlay');
       }
+      this.copyStubDirectory(sourceDir, realSource, overlayDir, overwrite, walk);
     } catch (err) {
       throw new Error(`Could not copy stub root into Pylance overlay: ${sourceDir}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  private isStubRootCopied(sourceDir: string, overlayDir: string): boolean {
-    try {
-      for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
-        const source = path.join(sourceDir, entry.name);
-        const target = path.join(overlayDir, entry.name);
-        const sourceStat = fs.statSync(source);
-        const targetStat = fs.lstatSync(target);
-        if (targetStat.isSymbolicLink()) {
-          return false;
-        }
-        if (sourceStat.isDirectory()) {
-          if (!targetStat.isDirectory() || !this.isStubRootCopied(source, target)) {
-            return false;
-          }
-        } else if (!targetStat.isFile() || sourceStat.size !== targetStat.size) {
-          return false;
-        }
+  private copyStubDirectory(sourceDir: string, realSourceDir: string, targetDir: string, overwrite: boolean, walk: StubWalk): void {
+    // Copy file by file to avoid the native cpSync directory fast path on Windows.
+    for (const entry of this.listStubEntries(sourceDir, realSourceDir, walk)) {
+      const target = path.join(targetDir, entry.name);
+      if (fs.existsSync(target)) {
+        if (!overwrite) continue;
+        fs.rmSync(target, { recursive: true, force: true });
       }
-      return true;
+      if (!entry.isDirectory) {
+        fs.copyFileSync(entry.source, target, fs.constants.COPYFILE_EXCL);
+        continue;
+      }
+      fs.mkdirSync(target);
+      walk.ancestors.add(entry.realSource);
+      try {
+        this.copyStubDirectory(entry.source, entry.realSource, target, false, walk);
+      } finally {
+        walk.ancestors.delete(entry.realSource);
+      }
+    }
+  }
+
+  private isStubRootCopied(sourceDir: string, overlayDir: string, skipNames?: ReadonlySet<string>): boolean {
+    try {
+      const { realSource, walk } = this.startStubWalk(sourceDir, overlayDir);
+      return this.isStubDirectoryCopied(sourceDir, realSource, overlayDir, walk, skipNames);
     } catch {
       return false;
     }
+  }
+
+  private isStubDirectoryCopied(
+    sourceDir: string,
+    realSourceDir: string,
+    targetDir: string,
+    walk: StubWalk,
+    skipNames?: ReadonlySet<string>,
+  ): boolean {
+    for (const entry of this.listStubEntries(sourceDir, realSourceDir, walk)) {
+      if (skipNames?.has(entry.name)) continue;
+      const target = path.join(targetDir, entry.name);
+      const targetStat = fs.lstatSync(target);
+      if (!entry.isDirectory) {
+        if (!targetStat.isFile() || fs.statSync(entry.source).size !== targetStat.size) return false;
+        continue;
+      }
+      if (!targetStat.isDirectory()) return false;
+      walk.ancestors.add(entry.realSource);
+      try {
+        if (!this.isStubDirectoryCopied(entry.source, entry.realSource, target, walk)) return false;
+      } finally {
+        walk.ancestors.delete(entry.realSource);
+      }
+    }
+    return true;
   }
 
   private isMergedUserStubRootCopied(userStubPath: string, stubsDir: string, overlayDir: string): boolean {
     try {
-      const canmvEntries = new Set(fs.readdirSync(stubsDir));
-      for (const entry of fs.readdirSync(userStubPath, { withFileTypes: true })) {
-        if (canmvEntries.has(entry.name)) {
-          continue;
-        }
-        const source = path.join(userStubPath, entry.name);
-        const target = path.join(overlayDir, entry.name);
-        if (!this.isStubEntryCopied(source, target)) {
-          return false;
-        }
-      }
-      return true;
+      // CanMV entries win on name collisions, so those user entries are not in the overlay.
+      const { realSource, walk } = this.startStubWalk(stubsDir, overlayDir);
+      const canmvNames = new Set(this.listStubEntries(stubsDir, realSource, walk).map(entry => entry.name));
+      return this.isStubRootCopied(userStubPath, overlayDir, canmvNames);
     } catch {
       return false;
     }
   }
 
-  private isStubEntryCopied(source: string, target: string): boolean {
-    try {
-      const sourceStat = fs.statSync(source);
-      const targetStat = fs.lstatSync(target);
-      if (targetStat.isSymbolicLink()) {
-        return false;
+  private startStubWalk(sourceDir: string, overlayDir: string, onSkip?: StubWalk['onSkip']): { realSource: string; walk: StubWalk } {
+    const realSource = this.normalizeFsPathForCompare(fs.realpathSync(sourceDir));
+    const overlayRoot = this.normalizeFsPathForCompare(fs.realpathSync(overlayDir));
+    return { realSource, walk: { overlayRoot, ancestors: new Set([realSource]), onSkip } };
+  }
+
+  /**
+   * Lists the files and folders the overlay copies, following links. Broken links, special files,
+   * links back to a parent folder and links to a folder holding the overlay are skipped, so one
+   * bad entry in a user's stub folder does not cancel the whole overlay. Copy and verification
+   * both use this list, so a skipped entry does not make the overlay look out of date.
+   */
+  private listStubEntries(sourceDir: string, realSourceDir: string, walk: StubWalk): StubEntry[] {
+    const entries: StubEntry[] = [];
+    for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+      const source = path.join(sourceDir, entry.name);
+      let type: fs.Dirent | fs.Stats = entry;
+      // Only links can change the real path, so resolve those alone.
+      let realSource = this.normalizeFsPathForCompare(path.join(realSourceDir, entry.name));
+      if (entry.isSymbolicLink()) {
+        try {
+          type = fs.statSync(source);
+          realSource = this.normalizeFsPathForCompare(fs.realpathSync(source));
+        } catch (err) {
+          walk.onSkip?.(source, `broken link (${err instanceof Error ? err.message : String(err)})`);
+          continue;
+        }
+        if (type.isDirectory() && (walk.ancestors.has(realSource) || this.pathContains(realSource, walk.overlayRoot))) {
+          walk.onSkip?.(source, 'link to a parent folder or to the Pylance overlay');
+          continue;
+        }
       }
-      if (sourceStat.isDirectory()) {
-        return targetStat.isDirectory() && this.isStubRootCopied(source, target);
+      if (type.isDirectory() || type.isFile()) {
+        entries.push({ name: entry.name, source, realSource, isDirectory: type.isDirectory() });
+      } else {
+        walk.onSkip?.(source, 'not a file or folder');
       }
-      return targetStat.isFile() && sourceStat.size === targetStat.size;
-    } catch {
-      return false;
     }
+    return entries;
+  }
+
+  private pathContains(parent: string, child: string): boolean {
+    const relative = path.relative(parent, child);
+    return !relative || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
   }
 
   private pylanceOverlayDir(): string {

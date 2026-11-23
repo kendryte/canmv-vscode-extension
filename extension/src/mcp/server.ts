@@ -19,6 +19,7 @@ import { JsonCodec, type WireMessage } from '../protocol/codec';
 import { FramedMessageReader, MAGIC, MSG_REQUEST } from '../protocol/framed_reader';
 import { Methods, createRequest, resetRequestId } from '../protocol/methods';
 import { type BackendMessage, type Event, type ProtocolError, type Request, type Response, isError, isEvent, isResponse } from '../protocol/types';
+import { examplesCacheState, isFirmwareRevisionDirName, listExamplesCaches } from '../service/resourceCache';
 import { minifyStartupScript } from '../service/startupScript';
 
 type ToolContent = { type: 'text'; text: string };
@@ -1653,6 +1654,9 @@ function searchResourceFiles(kind: ResourceKind, args: Record<string, unknown>):
 
 function findResourceRoots(kind: ResourceKind): ResourceRoot[] {
   const baseDir = resourceBaseDir(kind);
+  if (kind === 'examples') {
+    return listExamplesCaches(baseDir).map((cache) => ({ revision: cache.id, root: cache.dir, mtimeMs: cache.mtimeMs }));
+  }
   try {
     if (!fs.existsSync(baseDir)) return [];
     return fs.readdirSync(baseDir, { withFileTypes: true })
@@ -1696,10 +1700,10 @@ function resourceBaseDir(kind: ResourceKind): string {
 function isUsableResourceRoot(kind: ResourceKind, root: string): boolean {
   try {
     if (kind === 'examples') {
-      return fs.readdirSync(root, { withFileTypes: true })
-        .some((entry) => entry.isDirectory() && (entry.name === 'examples' || entry.name === 'models'));
+      return examplesCacheState(root) !== 'none';
     }
-    return collectResourceFiles(kind, root, 1, root).length > 0;
+    // The name check skips download temp folders (`<revision>.tmp-XXXXXX`).
+    return isFirmwareRevisionDirName(path.basename(root)) && collectResourceFiles(kind, root, 1, root).length > 0;
   } catch {
     return false;
   }

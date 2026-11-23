@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { logInfo, logWarn } from '../output';
+import { normalizeExamplesId, normalizeFirmwareRevision } from './resourceCache';
 
 const CANMV_RESOURCE_BASE_URL = 'https://download.kendryte.com/developer/tools/canmv_vscode_extension';
 
@@ -30,16 +31,6 @@ export type CanmvResourceRoute = {
   examplesId: string;
   examplesUrl: string;
 };
-
-export function normalizeFirmwareRevision(revision: string): string {
-  const trimmed = (revision || '').trim();
-  return /^[0-9a-fA-F]{40}$/.test(trimmed) ? trimmed.toLowerCase() : '';
-}
-
-export function normalizeExamplesId(examplesId: string): string {
-  const trimmed = (examplesId || '').trim();
-  return /^[0-9a-fA-F]{64}$/.test(trimmed) ? trimmed.toLowerCase() : '';
-}
 
 export class CanmvResourceRouteService {
   private readonly assetsBaseUrl = CANMV_RESOURCE_BASE_URL;
